@@ -60,6 +60,9 @@ endif()
 # Consoles with a PowerPC CPU.
 option(RECOMP_PPC "PowerPC core: lifter and CPU model (a PowerPC platform turns it on)" OFF)
 
+# The Nintendo Switch, on an AArch64 core.
+option(RECOMP_PLATFORM_HORIZON "Nintendo Switch (Horizon OS) platform module" OFF)
+
 # The host layer (cmake/host.cmake): what a native program needs on its
 # host, whatever its guest CPU. SDL3 (windows, input, audio output),
 # ffmpeg (movies, compressed audio), LLVM's demanglers (Microsoft and
@@ -131,6 +134,31 @@ if(RECOMP_PPC)
   endfunction()
 
   add_subdirectory(tests/ppc)
+endif()
+
+# The AArch64 lifter and CPU model, for the platforms with an AArch64 CPU
+# (the Switch), then those platforms.
+if(RECOMP_PLATFORM_HORIZON)
+  add_library(recomp_a64 SHARED src/a64/dispatch.cpp src/a64/fatal.cpp src/a64/platform.cpp)
+  target_include_directories(recomp_a64 PUBLIC src)
+  target_compile_features(recomp_a64 PUBLIC cxx_std_20)
+  add_subdirectory(tools/lifter_a64)
+
+  # recomp_add_lifted_a64(<target> <dir>): an object library of
+  # recomp_lift_a64's output in <dir> plus the registration of its function
+  # table. Lifted code is always optimised: at -O0 it is unusably slow,
+  # and debug info for generated source is not useful.
+  function(recomp_add_lifted_a64 target dir)
+    file(GLOB _gen CONFIGURE_DEPENDS "${dir}/*.cpp")
+    recomp_add_lifted_a64_files(${target} ${_gen})
+  endfunction()
+  # The same over a known list of generated files (a build-time lift).
+  function(recomp_add_lifted_a64_files target)
+    add_library(${target} OBJECT ${ARGN} "${RECOMP_ROOT}/src/a64/lifted_table.cpp")
+    target_include_directories(${target} PRIVATE "${RECOMP_ROOT}/src")
+    target_compile_features(${target} PRIVATE cxx_std_20)
+    target_compile_options(${target} PRIVATE -O2 -g0 -fno-strict-aliasing)
+  endfunction()
 endif()
 
 if(NOT RECOMP_X86)
