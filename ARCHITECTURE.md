@@ -1186,7 +1186,14 @@ only those below it.
   gdi32 and the rest of Windows (recomp_win32), and of DirectX and the
   middleware, one library per DLL (recomp_d3d9, recomp_mss32, ...).
   Console platforms are modules the same way, on the core of their CPU;
-  a game's build compiles and links only its own platform.
+  a game's build compiles and links only its own platform. The Switch
+  (platforms/horizon, RECOMP_PLATFORM_HORIZON; its design is
+  platforms/horizon/ARCHITECTURE.md) is AArch64: its core is the lifter
+  recomp_lift_a64 (tools/lifter_a64) and the CPU model and dispatcher it
+  targets (src/a64, recomp_a64). The Switch module adds the NRO/NSO image
+  reader to recomp_lift_a64, the address layout, process bring-up, the
+  kernel's supervisor calls (Svc, which a64/lifted.h declares and the
+  platform defines) and its HLE.
 
 The x86 core knows no platform. A platform's loader (Win32's
 RunProcess) creates the process (StartProcess: the arena and the thunk
@@ -1220,7 +1227,9 @@ builds, such as a lifter's tests cross built for a host whose sysroot
 has none of its libraries. Each core and platform option is
 independent, so one tree can build several together (CMakePresets:
 debug for the x86 core with Win32, x86 for the x86 core alone, ppc for
-the PowerPC core alone).
+the PowerPC core alone, horizon for the Switch alone,
+horizon-aarch64-qemu for the Switch's CPU-only tests on an arm64 host
+under qemu-aarch64).
 
 ## Roadmap
 - 64-bit guests (above).
