@@ -1,7 +1,7 @@
 # The Switch (Horizon OS) platform module
 
 Static recompilation of Nintendo Switch games into native 64-bit
-programs, on x86recomp's AArch64 core: a game's machine code is lifted
+programs, on SwARc's AArch64 core: a game's machine code is lifted
 ahead of time to C++ (`recomp_lift_a64`, the core in `tools/lifter_a64`
 and `src/a64`) and linked against a runtime that reimplements the parts
 of the console's SDK (nnSdk), its graphics API (NVN) and its services
@@ -16,13 +16,13 @@ ARCHITECTURE.md is the design being built.
 ## Using it from a game project
 
 ```cmake
-set(X86RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../x86recomp" CACHE PATH "")
+set(SWARC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../SwARc" CACHE PATH "")
 set(RECOMP_X86 OFF CACHE BOOL "")
 set(RECOMP_PLATFORM_WIN32 OFF CACHE BOOL "")
 set(RECOMP_PLATFORM_HORIZON ON CACHE BOOL "")
 set(CMAKE_LINK_DEPENDS_NO_SHARED ON)
 enable_testing()
-add_subdirectory("${X86RECOMP_DIR}" x86recomp)
+add_subdirectory("${SWARC_DIR}" swarc)
 
 recomp_add_lifted_a64(mygame_lifted "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 add_executable(mygame src/main.cpp $<TARGET_OBJECTS:mygame_lifted>)

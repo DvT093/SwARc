@@ -7,7 +7,7 @@ and the system services it calls (HLE). Nothing here is specific to one
 game: game projects hold that (entry point config, manifest, symbols,
 game hooks) and use this tree as a library.
 
-It is a console platform on x86recomp's AArch64 core (the top-level
+It is a console platform on SwARc's AArch64 core (the top-level
 ARCHITECTURE.md, "Layout: base, CPU cores, platform modules"), built
 only with `RECOMP_PLATFORM_HORIZON`, which turns on `RECOMP_A64`:
 - Core, shared by every AArch64 guest: the lifter `recomp_lift_a64`
@@ -125,7 +125,7 @@ bring-up, before the host layer allocates. Every fixed mapping is
 checked and a collision is fatal, not worked around.
 
 ## Game projects
-A game project adds x86recomp with `add_subdirectory()` (with
+A game project adds SwARc with `add_subdirectory()` (with
 `RECOMP_PLATFORM_HORIZON` on, `RECOMP_X86` and `RECOMP_PLATFORM_WIN32`
 off), links
 `recomp_horizon` plus the optional HLE modules its modules import
