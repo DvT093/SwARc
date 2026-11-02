@@ -14,10 +14,10 @@ using a64::Fatal;
 namespace platform = a64::platform;
 
 int RunProcess(const GameConfig& cfg) {
-  Module m;
+  a64::Module m;
   std::string err;
-  if (!LoadNro(cfg.nro, m, err) || !Relocate(m, kMainBase, err)) Fatal(nullptr, "%s", err.c_str());
-  if (TextHash(m) != a64::LiftedTextHash())
+  if (!LoadNro(cfg.nro, m, err) || !a64::Relocate(m, kMainBase, err)) Fatal(nullptr, "%s", err.c_str());
+  if (a64::TextHash(m) != a64::LiftedTextHash())
     Fatal(nullptr, "%s is not the module this program was lifted from", cfg.nro.c_str());
   if (!platform::MapFixed(kMainBase, m.image.size()))
     Fatal(nullptr, "cannot map the main module at %llx", static_cast<unsigned long long>(kMainBase));

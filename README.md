@@ -60,8 +60,8 @@ on the same core rather than forks: the first, for the PlayStation 4
 (its executable format, system libraries and GPU), is in progress on
 its own branch. A console with another CPU brings that CPU's core with
 it: the Nintendo Switch module ([platforms/horizon](platforms/horizon))
-adds an AArch64 lifter and CPU model, and builds with the x86 path
-switched off.
+is on the AArch64 core (`src/a64`, `tools/lifter_a64`, `tests/a64`), and
+builds with the x86 core and Win32 switched off.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) describes the design; each platform's
 `docs/` the observed behaviour of what it reimplements

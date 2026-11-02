@@ -7,27 +7,30 @@ and the system services it calls (HLE). Nothing here is specific to one
 game: game projects hold that (entry point config, manifest, symbols,
 game hooks) and use this tree as a library.
 
-It is a console platform on x86recomp's shared core (the top-level
-ARCHITECTURE.md, "Console platforms"), built only with
-`RECOMP_PLATFORM_HORIZON`:
+It is a console platform on x86recomp's AArch64 core (the top-level
+ARCHITECTURE.md, "Layout: base, CPU cores, platform modules"), built
+only with `RECOMP_PLATFORM_HORIZON`, which turns on `RECOMP_A64`:
 - Core, shared by every AArch64 guest: the lifter `recomp_lift_a64`
   (`tools/lifter_a64`: decoder, function discovery, jump tables, the
-  emitter) and the CPU model and dispatcher it targets (`src/a64`,
-  library `recomp_a64`). The lifter knows no executable format; the
-  platform registers an image reader for its own.
+  emitter, its own static-PIE ELF reader), the CPU model and dispatcher
+  it targets (`src/a64`, library `recomp_a64`), position-independent
+  modules (`a64/image.h`) and the lifter's tests (`tests/a64`). Its
+  design: src/a64/ARCHITECTURE.md (the lifter, FP/SIMD, the host
+  platform layer).
 - Platform, here: the NRO/NSO formats and the lifter's reader for them,
   the guest address layout, process bring-up, the kernel's supervisor
   calls, the SDK and service HLE, NVN and the Maxwell shader front end
   (libraries `recomp_horizon_*`), with their tests and docs.
 Paths below are relative to `platforms/horizon` unless they start with
-`src/a64` or `tools/lifter_a64`. A Switch game project turns
-`RECOMP_X86` off: it needs none of the x86 path's code. It keeps the host
-layer every guest shares (the top-level ARCHITECTURE.md, "Console
-platforms"): SDL3 for windows, input and audio output, ffmpeg for
+`src/a64`, `tools/lifter_a64` or `tests/a64`. A Switch game project
+turns the x86 core and Win32 off (`RECOMP_X86`, `RECOMP_PLATFORM_WIN32`):
+it needs none of their code. It keeps the host layer every guest shares
+(the top-level ARCHITECTURE.md, "Layout: base, CPU cores, platform
+modules"): SDL3 for windows, input and audio output, ffmpeg for
 movies, LLVM's Itanium demangler for the SDK's import names,
 gfx::Device for NVN on Vulkan and Metal, and the software mixer.
 
-The module keeps the x86 path's shape wherever the guest allows: one
+The module keeps the x86 core's shape wherever the guest allows: one
 C++ function per guest function, registers cached in locals, a
 dispatcher for indirect calls, an HLE registry that is fatal on
 anything unhandled, exact arithmetic as the reference for hand-written
@@ -86,10 +89,10 @@ exefs/{rtld,main,subsdk*,sdk} ── recomp_lift_a64 (AArch64 -> C++) ── gen
 ```
 
 ## What "64-bit" means here
-The guest already is 64-bit, so unlike the x86 path there is no arena and
-no base register: each module is mapped at the guest VA it would have on
-the console, with host `mmap` at that exact address, and a guest pointer
-is a host pointer. A guest load is one host load. HLE code dereferences
+The guest already is 64-bit, so as everywhere on the AArch64 core
+(src/a64/ARCHITECTURE.md, "Guest addresses are host addresses") each
+module is mapped at the guest VA it would have on the console and a
+guest pointer is a host pointer. HLE code dereferences
 guest pointers directly; struct layouts are the AArch64 ones the host
 also uses (LP64, same alignment rules), so guest-layout mirror types are
 only needed where the SDK's ABI differs from the host compiler's
@@ -123,7 +126,8 @@ checked and a collision is fatal, not worked around.
 
 ## Game projects
 A game project adds x86recomp with `add_subdirectory()` (with
-`RECOMP_PLATFORM_HORIZON` on and `RECOMP_X86` off), links
+`RECOMP_PLATFORM_HORIZON` on, `RECOMP_X86` and `RECOMP_PLATFORM_WIN32`
+off), links
 `recomp_horizon` plus the optional HLE modules its modules import
 (`recomp_horizon_nvn`, `recomp_horizon_audio`,
 `recomp_horizon_movie`), adds its lifted code with
@@ -141,8 +145,8 @@ The game's executable holds its lifted code, its replacements and
 `main()`; the runtime, the FP model, the HLE modules and the libraries
 under them are shared libraries (librecomp_horizon_*.so, .dylib on
 macOS), one copy of state each, rebuilt independently. Lifted code
-reaches the dispatcher through `RegisterLiftedFunctions`, compiled into the lifted object by
-`recomp_add_lifted_a64()`, as on the x86 path.
+reaches the dispatcher through `RegisterLiftedFunctions`, compiled into
+the lifted object by `recomp_add_lifted_a64()`, as on the x86 core.
 
 Game-specific patches live in the game project as hand-written
 replacements of lifted functions: `replace <va>` in the manifest emits
@@ -155,87 +159,12 @@ replacements, never lifter special cases.
 ### Modules and function discovery
 NSO modules (LZ4 segments, `MOD0` header, `.dynamic`, `.dynsym`,
 `.eh_frame_hdr`) are decoded by the lifter and by the runtime loader
-from the same code (`src/horizon/nso_image`). Function boundaries are
-exact: starts from `.eh_frame_hdr`, sized function symbols, relocation
-targets that point into `.text` (vtables, callbacks), direct `BL`
-targets and `B` targets outside the branching function. A function's
-instructions are the ones reachable from its start within its range
-(the FDE or symbol size, else up to the next start), so data after a
-`ret` (literal pools) is never decoded. Ghidra is a dev-time aid for
-naming and for jump tables, as on the x86 path, not a required input. NRO
-(homebrew) is loaded the same way and is the lifter's first fixture
-format.
-
-### Lifter: AArch64 -> portable C++
-- Decoder: our own, from the ARM encoding tables: AArch64 is fixed
-  width and regular, the decoder is a few thousand lines, and owning it
-  gives the emitter the operand model it needs. Capstone is a build-time
-  cross-check in the tools and tests only.
-- One `void f_<va>(Ctx&)` per guest function. General registers, SP and
-  NZCV are cached in locals and spilled around calls, HLE and anything
-  that can observe them; `v0`-`v31` live in `Ctx` and are operated on in
-  place through the FP/SIMD model, like the x86 path's SSE registers.
-- `BL`/`B` to a known function: direct call (a `B` tail call is a call
-  followed by return). `BLR`/`BR`: `Dispatch(c, target, va)`, a hash
-  table from guest VA to lifted function; thunk-range targets go to the
-  HLE registry. `RET`: return. Compiler jump tables (`adr`/`adrp`;
-  scaled `ldrb/ldrh/ldr/ldrsw`; `add`; `br`, bounded by the `cmp` +
-  `b.hi`/`b.hs` or `and` mask above them) are recognised by pattern:
-  the `br` becomes a switch on the target the code computed, with one
-  case per table entry, computed as the code computes it; any other
-  target is `BadJump` with the VA, fixed through the manifest.
-- Memory ordering: `ldar/stlr` become acquire/release atomics; `ldxr`
-  records the address and the value it read in `Ctx`'s exclusive
-  monitor and `stxr` is a compare-and-swap against them, as QEMU and
-  Unicorn model the monitor (the guest's own retry loop stays as it
-  was); `dmb/dsb` become fences. Lifted code is thread-safe by
-  construction because it uses the same atomics the console did.
-- `svc` calls the runtime's supervisor-call table; `brk`/`udf` are fatal
-  with the VA. `mrs` of `tpidr_el0`, the counter and CPU id registers
-  read `Ctx` or the runtime's clock.
-- Exactness is tested the way the x86 lifter is, on a fixture NRO built
-  from checked-in assembly and C (`tests/fixture`). `recomp_lift_a64
-  --forms` emits each distinct instruction form (`tests/lift_forms.h`) as a function of
-  its own; the Unicorn oracle (`tests/oracle/oracle.py`, Python, so
-  Unicorn is never linked into anything) runs the original instruction
-  from random and special register states and writes input and output
-  states; `horizon_lift_forms_test` replays them on the lifted forms and
-  compares registers, NZCV, the thread pointer and memory bit for bit.
-  Building it with `RECOMP_A64_MUTATION=<n>` plants a known bug in
-  `lifted.h`, and those builds must fail. `horizon_lift_fixture` runs the whole
-  fixture lifted and under Unicorn and compares their output. On an
-  arm64 host the CPU itself is a second oracle: `forms_native.S` holds
-  each form's original instruction in a stub, run from the same inputs,
-  for every form whose result does not depend on its address or on the
-  host's SP and thread pointer (x18 is skipped on macOS, which reserves
-  it). The `aarch64-qemu` preset cross-builds everything for aarch64
-  Linux and runs it under `qemu-aarch64`; QEMU shares Unicorn's CPU
-  model, so that checks the arm64 build and the harness, and only real
-  arm64 hardware is an independent oracle.
-  Lifter output must not change unintentionally: diff a fixture's
-  `generated/` when touching the lifter.
-
-### FP/SIMD: exact by model, fast by proof
-The console's floating point is IEEE binary32/64 under FPCR control:
-rounding mode, flush-to-zero (`FZ`, inputs and outputs), default NaN
-(`DN`), and ARM's NaN propagation order; `FPSR` accumulates the
-exception flags. Games set `FZ` and `DN` and some read `FPSR`.
-- The definition of correct is Berkeley SoftFloat with its ARM-VFPv2
-  specialisation (and the default-NaN variant), driven by the thread's
-  FPCR. Every scalar and NEON lane operation goes through it.
-- Host `float`/`double` only inside proven-exact fast paths: an IEEE
-  host operation in round-to-nearest with no contraction gives the same
-  bits for add, sub, mul, div, sqrt and fma when neither input nor the
-  result is NaN or denormal and `FZ` is clear; the fast path checks
-  those conditions and falls back to the model otherwise. Each path has
-  its proof next to the code, a fuzz test against the model that
-  mutations make fail, and is built with `RECOMP_A64_FP_FLAGS`
-  (`-ffp-contract=off`, no fast-math) in the host's default environment.
-- NEON integer lanes are plain C++ on `uint8_t[16]` registers; the
-  tests cover saturation, narrowing and the lane-ordering cases.
-- `fcvt`, `frint*`, `fjcvtzs` and the reciprocal-estimate instructions
-  (`frecpe`, `frsqrte`, with their table-based results) are in the model
-  because games use them in physics and in sorting keys.
+from the same code (`src/horizon/nso_image`), into the core's module
+(a64/image.h), whose function discovery is the core's
+(src/a64/ARCHITECTURE.md, "Modules and function discovery"). NRO
+(homebrew) is loaded the same way: the core's test fixture, linked with
+the NRO crt0 here (`tests/fixture/crt0.S`), runs as one in the
+`horizon_fixture` test against the core's Unicorn oracle.
 
 ### Threads and the scheduler
 Each guest thread is a host thread with its own `Ctx` and a guest stack.
@@ -289,7 +218,7 @@ layouts (block-linear, BCn, ASTC) are decoded by our own code.
   multiple viewports, bindless-style texture handles): Vulkan on Linux
   and macOS is the first; native Metal is the second and is required.
   SDL_GPU is not enough for NVN (no geometry stage, limited binding
-  model), so unlike the x86 path this tree talks to Vulkan and Metal
+  model), so unlike the Win32 platform this tree talks to Vulkan and Metal
   directly.
 - Shaders: `src/horizon/maxwell` decodes Maxwell SASS, builds
   structured control flow and emits GLSL; shaderc compiles it to SPIR-V
@@ -324,15 +253,9 @@ host unwinding cannot find the guest's landing pads. The runtime's
 `.eh_frame` and LSDA tables to find the handling frame and landing pad,
 then throws a host exception carrying the target; the lifted function
 that owns that frame catches it and continues at the landing pad with
-the callee-saved registers restored per the CFI. This is the x86 path's
+the callee-saved registers restored per the CFI. This is the x86 core's
 `GuestResume` for SEH, generalised to table-driven unwinding; the lifter
 emits the catch only in functions whose LSDA has landing pads.
-
-### Platform layer
-`src/a64/platform.{h,cpp}` (core) holds what POSIX does not cover the same
-way on Linux and macOS (fixed-address mappings and their page sizes,
-thread names and priorities, the fault handler's context, the user data
-directory); the rest of the runtime has no OS #ifdefs.
 
 ### Diagnostics
 Every fatal names the guest VA and symbol (`main+0x1234
@@ -347,7 +270,8 @@ by family; `<ID>_SCHED` logs scheduler decisions.
    and C (no SDK, supervisor calls only) and the differential tests pass
    against Unicorn on x86-64 and the CPU on arm64. Done on
    x86-64, on arm64 under qemu-aarch64 and on Apple Silicon under macOS
-   (the `horizon_lift_*` tests, where the forms also run on the CPU).
+   (then the `horizon_lift_*` tests; now the AArch64 core's `a64_lift_*`
+   tests, where the forms also run on the CPU, and `horizon_fixture`).
 2. A game's `main` lifts whole; with `sdk` imports bound to fatal
    stubs the game reaches `nnMain`, mounts RomFS and reads its first
    files through `nn::fs` HLE.

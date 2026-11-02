@@ -1,12 +1,12 @@
 # The Switch (Horizon OS) platform module
 
 Static recompilation of Nintendo Switch games into native 64-bit
-programs, on x86recomp's shared core: a game's AArch64 machine code is
-lifted ahead of time to C++ (`recomp_lift_a64`, the AArch64 core in
-`tools/lifter_a64` and `src/a64`) and linked against a runtime that
-reimplements the parts of the console's SDK (nnSdk), its graphics API
-(NVN) and its services the game uses. Built only with
-`RECOMP_PLATFORM_HORIZON`; the x86 path (`RECOMP_X86`) can be off.
+programs, on x86recomp's AArch64 core: a game's machine code is lifted
+ahead of time to C++ (`recomp_lift_a64`, the core in `tools/lifter_a64`
+and `src/a64`) and linked against a runtime that reimplements the parts
+of the console's SDK (nnSdk), its graphics API (NVN) and its services
+the game uses. Built only with
+`RECOMP_PLATFORM_HORIZON`; the x86 core (`RECOMP_X86`) can be off.
 
 Status: milestone 1 of [ARCHITECTURE.md](ARCHITECTURE.md). The lifter and
 an integer-only runtime lift and run a homebrew NRO fixture, checked
@@ -18,6 +18,7 @@ ARCHITECTURE.md is the design being built.
 ```cmake
 set(X86RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../x86recomp" CACHE PATH "")
 set(RECOMP_X86 OFF CACHE BOOL "")
+set(RECOMP_PLATFORM_WIN32 OFF CACHE BOOL "")
 set(RECOMP_PLATFORM_HORIZON ON CACHE BOOL "")
 set(CMAKE_LINK_DEPENDS_NO_SHARED ON)
 enable_testing()
@@ -43,9 +44,9 @@ the host layer every guest shares: SDL3, ffmpeg, LLVM (its demangler),
 glslang (and SPIRV-Cross on macOS). For the tests: Python 3 with `unicorn` in the repository's `.venv/`
 (gitignored); Unicorn is used by tests only, never by a product. An arm64
 host build can be checked on x86-64 with crossdev's
-`aarch64-unknown-linux-gnu` toolchain and `qemu-aarch64` (the
-`horizon-aarch64-qemu` preset, CPU-only: the lifter and runtime without
-the host layer). The fixtures the tests need are checked
+`aarch64-unknown-linux-gnu` toolchain and `qemu-aarch64` (the AArch64
+core's `a64-aarch64-qemu` preset, CPU-only: the lifter and runtime
+without the host layer). The fixtures the tests need are checked
 in as assembly and C built with clang's integrated assembler and LLD.
 
 No game code, assets, keys or firmware are in this repository or in any

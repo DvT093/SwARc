@@ -1,6 +1,6 @@
 #pragma once
 // What POSIX does not cover the same way on Linux and macOS
-// (platforms/horizon/ARCHITECTURE.md, "Platform layer"). The rest of the
+// (src/a64/ARCHITECTURE.md, "Platform layer"). The rest of the
 // runtime has no OS #ifdefs.
 
 #include <cstddef>

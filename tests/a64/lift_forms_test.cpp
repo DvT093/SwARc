@@ -1,12 +1,12 @@
-// Differential test of every distinct instruction form in the fixture NRO
+// Differential test of every distinct instruction form in the fixture
 // (recomp_lift_a64 --forms): each lifted form runs from the input states the
-// Unicorn oracle (tests/oracle/oracle.py forms) ran the original
+// Unicorn oracle (oracle/oracle.py forms) ran the original
 // instruction from, and must end in the same state bit for bit: general
 // registers, SP, NZCV, TPIDR_EL0 and a 64 KiB memory buffer.
-//   horizon_lift_forms_test <fixture.nro> <vectors.bin>
+//   a64_lift_forms_test <fixture.elf> <vectors.bin>
 //
-// The fixture is mapped at its console address and the buffer at the same
-// address as in the oracle, so addresses (literal loads, ADR, pointers in
+// The fixture is mapped at kElfBase and the buffer at the same address as
+// in the oracle, so addresses (literal loads, ADR, pointers in
 // registers) are identical in both runs.
 //
 // On an arm64 host the CPU itself is a second oracle: each form that has a
@@ -23,14 +23,13 @@
 #include <string>
 #include <vector>
 
-#include "lift_forms.h"
-#include "horizon/layout.h"
-#include "horizon/nso_image.h"
+#include "a64/image.h"
 #include "a64/platform.h"
+#include "lift_forms.h"
 
 namespace {
 
-// Repeated in tests/oracle/oracle.py.
+// Repeated in oracle/oracle.py.
 constexpr uint64_t kBuf = 0x7080000000ull, kBufSize = 0x10000;
 constexpr uint64_t kWindow = kBuf + kBufSize / 2 - 256, kWindowSize = 512;
 constexpr uint64_t kPatternSeed = 0x5EED;
@@ -102,21 +101,21 @@ constexpr bool kX18Reserved = false;
 
 int main(int argc, char** argv) {
   if (argc != 3) {
-    std::fprintf(stderr, "usage: horizon_lift_forms_test <fixture.nro> <vectors.bin>\n");
+    std::fprintf(stderr, "usage: a64_lift_forms_test <fixture.elf> <vectors.bin>\n");
     return 2;
   }
-  recomp::horizon::Module m;
+  recomp::a64::Module m;
   std::string err;
-  if (!recomp::horizon::LoadNro(argv[1], m, err) || !recomp::horizon::Relocate(m, recomp::horizon::kMainBase, err)) {
+  if (!recomp::a64::LoadElf(argv[1], m, err) || !recomp::a64::Relocate(m, recomp::a64::kElfBase, err)) {
     std::fprintf(stderr, "%s\n", err.c_str());
     return 1;
   }
-  if (!recomp::a64::platform::MapFixed(recomp::horizon::kMainBase, m.image.size()) ||
+  if (!recomp::a64::platform::MapFixed(recomp::a64::kElfBase, m.image.size()) ||
       !recomp::a64::platform::MapFixed(kBuf, kBufSize)) {
     std::fprintf(stderr, "cannot map the fixture or the buffer\n");
     return 1;
   }
-  std::memcpy(reinterpret_cast<void*>(recomp::horizon::kMainBase), m.image.data(), m.image.size());
+  std::memcpy(reinterpret_cast<void*>(recomp::a64::kElfBase), m.image.data(), m.image.size());
   std::vector<uint8_t> pattern(kBufSize);
   uint64_t seed = kPatternSeed;
   for (size_t i = 0; i < kBufSize; i += 8) {
@@ -126,7 +125,7 @@ int main(int argc, char** argv) {
 
   std::ifstream f(argv[2], std::ios::binary);
   char magic[8];
-  if (!f.read(magic, 8) || std::memcmp(magic, "NXFV0001", 8)) {
+  if (!f.read(magic, 8) || std::memcmp(magic, "A64V0001", 8)) {
     std::fprintf(stderr, "%s: not a vector file\n", argv[2]);
     return 1;
   }

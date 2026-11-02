@@ -1,7 +1,7 @@
 #pragma once
 // C++ emission: one `void f_<VA>(Ctx&)` per guest function, general
 // registers, SP and NZCV cached in locals and spilled around anything that
-// can observe them (platforms/horizon/ARCHITECTURE.md, "Lifter").
+// can observe them (src/a64/ARCHITECTURE.md, "Lifter").
 
 #include <string>
 

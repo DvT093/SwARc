@@ -1,6 +1,6 @@
 #pragma once
 // AArch64 decoder for the lifter: ARMv8.0 A64 integer, memory, branch and
-// system instructions (the Switch's Cortex-A57 without FP/SIMD so far),
+// system instructions (as on a Cortex-A57, without FP/SIMD so far),
 // decoded from the encoding tables of the Arm Architecture Reference
 // Manual (DDI 0487), section C4. Anything else decodes as kInvalid.
 

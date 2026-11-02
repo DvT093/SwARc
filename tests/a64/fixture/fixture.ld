@@ -1,12 +1,14 @@
-/* Static-PIE homebrew layout: text, read-only and data segments, each
-   page-aligned from 0, as horizon_elf2nro expects. MOD0 (crt0.S) points at the
-   symbols defined here. */
+/* Static-PIE layout: text, read-only and data segments, each page-aligned
+   from 0, as a64/image.h's LoadElf expects (and a platform's converter
+   to its own format). The section boundary symbols are for a platform's
+   crt0 whose module header points at them. */
 ENTRY(_start)
 PHDRS {
   text PT_LOAD FLAGS(5);
   ro PT_LOAD FLAGS(4);
   data PT_LOAD FLAGS(6);
   dyn PT_DYNAMIC;
+  eh PT_GNU_EH_FRAME;
 }
 SECTIONS {
   . = 0;
@@ -21,7 +23,7 @@ SECTIONS {
     __eh_frame_hdr_start = .;
     *(.eh_frame_hdr)
     __eh_frame_hdr_end = .;
-  } :ro
+  } :ro :eh
   .eh_frame : { KEEP(*(.eh_frame)) } :ro
   . = ALIGN(0x1000);
   .data : { *(.data .data.*) } :data

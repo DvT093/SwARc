@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Unicorn oracle for the lifter tests (run with the repository's .venv).
 
-  oracle.py run --nro fixture.nro --lifted [emulator...] horizon_fixture
-      Runs the NRO under Unicorn and the lifted program (through the
-      cross-compiling emulator, if any); their output (svcOutputDebugString)
-      must be identical.
-  oracle.py forms --nro fixture.nro --forms forms.txt --out vectors.bin
+  oracle.py run --elf fixture.elf [--image module] --lifted [emulator...] program
+      Runs the fixture under Unicorn and the lifted program on `module`
+      (the ELF unless given: a platform runs the same fixture in its own
+      format) through the cross-compiling emulator, if any; their output
+      (the fixture's writes) must be identical.
+  oracle.py forms --elf fixture.elf --forms forms.txt --out vectors.bin
       Runs every instruction form recomp_lift_a64 found (forms.txt) under Unicorn
       from random and special states and writes the input and output states
       for lift_forms_test.
@@ -23,7 +24,7 @@ import zlib
 from unicorn import Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_INTR
 from unicorn import arm64_const as A
 
-# src/horizon/layout.h
+# a64/image.h's kElfBase; fixture_main.cpp
 MAIN_BASE = 0x7100000000
 STACK_BASE = 0x7000000000
 STACK_SIZE = 0x100000
@@ -43,18 +44,25 @@ def page_up(v):
     return (v + 0xFFF) & ~0xFFF
 
 
-def load_nro(path):
-    """The NRO's memory image, relocated for MAIN_BASE."""
+def load_elf(path):
+    """The static-PIE ELF's memory image (a64/image.h's LoadElf), relocated
+    for MAIN_BASE."""
     data = open(path, "rb").read()
-    if data[0x10:0x14] != b"NRO0":
-        sys.exit(f"{path}: not an NRO")
-    segs = [struct.unpack_from("<II", data, 0x20 + 8 * i) for i in range(3)]
-    bss = struct.unpack_from("<I", data, 0x38)[0]
-    image = bytearray(page_up(segs[2][0] + segs[2][1] + bss))
-    for off, size in segs:
-        image[off:off + size] = data[off:off + size]
-    mod0 = struct.unpack_from("<I", data, 4)[0]
-    dyn = mod0 + struct.unpack_from("<i", image, mod0 + 4)[0]
+    if data[:4] != b"\x7fELF" or struct.unpack_from("<H", data, 18)[0] != 183:
+        sys.exit(f"{path}: not an AArch64 ELF")
+    phoff, = struct.unpack_from("<Q", data, 32)
+    phentsize, phnum = struct.unpack_from("<HH", data, 54)
+    loads, dyn = [], None
+    for i in range(phnum):
+        ptype, _, off, va, _, filesz, memsz = struct.unpack_from(
+            "<IIQQQQQ", data, phoff + i * phentsize)
+        if ptype == 1:
+            loads.append((off, va, filesz, memsz))
+        elif ptype == 2:
+            dyn = va
+    image = bytearray(page_up(max(va + memsz for _, va, _, memsz in loads)))
+    for off, va, filesz, _ in loads:
+        image[va:va + filesz] = data[off:off + filesz]
     tags = {}
     while True:
         tag, val = struct.unpack_from("<qQ", image, dyn)
@@ -73,7 +81,7 @@ def load_nro(path):
 
 def new_cpu(image):
     uc = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
-    if hasattr(A, "UC_CPU_ARM64_A57"):  # the Switch's core
+    if hasattr(A, "UC_CPU_ARM64_A57"):  # the fixture is built for it
         uc.ctl_set_cpu_model(A.UC_CPU_ARM64_A57)
     uc.mem_map(MAIN_BASE, len(image))
     uc.mem_write(MAIN_BASE, image)
@@ -81,7 +89,7 @@ def new_cpu(image):
 
 
 def run(args):
-    image = load_nro(args.nro)
+    image = load_elf(args.elf)
     uc = new_cpu(image)
     uc.mem_map(STACK_BASE, STACK_SIZE)
     uc.reg_write(A.UC_ARM64_REG_SP, STACK_BASE + STACK_SIZE)
@@ -96,11 +104,11 @@ def run(args):
             uc.emu_stop()
             return
         imm = (insn >> 5) & 0xFFFF
-        if imm == 0x27:  # svcOutputDebugString
+        if imm == 1:  # fixture_write (fixture_platform.cpp)
             x0, x1 = uc.reg_read(A.UC_ARM64_REG_X0), uc.reg_read(A.UC_ARM64_REG_X1)
             out.extend(uc.mem_read(x0, x1))
             uc.reg_write(A.UC_ARM64_REG_X0, 0)
-        elif imm == 0x07:  # svcExitProcess
+        elif imm == 0:  # exit
             state["exited"] = True
             uc.emu_stop()
         else:
@@ -116,7 +124,7 @@ def run(args):
     if state["error"] or not state["exited"]:
         sys.exit(f"oracle: {state['error'] or 'did not exit'}")
 
-    lifted = subprocess.run(args.lifted + [args.nro], stdout=subprocess.PIPE)
+    lifted = subprocess.run(args.lifted + [args.image or args.elf], stdout=subprocess.PIPE)
     expect, got = bytes(out), lifted.stdout
     sys.stdout.write("oracle:\n" + expect.decode(errors="replace"))
     if lifted.returncode != 0:
@@ -168,7 +176,7 @@ def pattern():
 
 
 def forms(args):
-    image = load_nro(args.nro)
+    image = load_elf(args.elf)
     uc = new_cpu(image)
     uc.mem_map(BUF, BUF_SIZE)
     base_pattern = pattern()
@@ -176,7 +184,7 @@ def forms(args):
     rng = random.Random(args.seed)
     count = skipped = 0
     with open(args.out, "wb") as out:
-        out.write(b"NXFV0001")
+        out.write(b"A64V0001")
         for line in open(args.forms):
             idx, va, raw, kind, rn, rm, _ = line.split()
             idx, va, raw, rn, rm = int(idx), int(va, 16), int(raw, 16), int(rn), int(rm)
@@ -227,11 +235,12 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--nro", required=True)
+    r.add_argument("--elf", required=True)
+    r.add_argument("--image")
     r.add_argument("--lifted", required=True, nargs=argparse.REMAINDER,
                    help="the lifted program (and its emulator); must come last")
     f = sub.add_parser("forms")
-    f.add_argument("--nro", required=True)
+    f.add_argument("--elf", required=True)
     f.add_argument("--forms", required=True)
     f.add_argument("--out", required=True)
     f.add_argument("--trials", type=int, default=100)

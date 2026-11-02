@@ -39,8 +39,8 @@ void RegisterLiftedFunctions(const LiftedFn* fns, uint32_t count, uint64_t text_
 // Runtime services called from lifted code. `va` is always the guest
 // address of the instruction making the call, for diagnostics.
 void Dispatch(Ctx& c, uint64_t target, uint64_t va);  // BLR, BR
-// The guest OS's kernel: defined by the platform module (the Switch's in
-// platforms/horizon/src/horizon/svc.cpp), never by this runtime.
+// The guest OS's kernel: defined by the platform module (or a test's
+// platform), never by this runtime.
 void Svc(Ctx& c, uint32_t imm, uint64_t va);
 [[noreturn]] void Unimplemented(Ctx& c, uint64_t va, const char* what);
 [[noreturn]] void BadJump(Ctx& c, uint64_t va, uint64_t target);

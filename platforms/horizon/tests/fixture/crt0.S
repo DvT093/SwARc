@@ -1,7 +1,9 @@
-// Entry and module header of the test fixture NRO: bytes 0x10-0x7F are the
+// Entry and module header of the AArch64 core's test fixture
+// (tests/a64/fixture) as a Switch homebrew NRO: bytes 0x10-0x7F are the
 // NRO header horizon_elf2nro writes, MOD0 locates .dynamic, .bss and
 // .eh_frame_hdr. The loader zeroes .bss and applies the relocations, so
-// crt0 only calls the C entry point and exits.
+// crt0 only calls the C entry point and exits; the fixture's output goes
+// through svcOutputDebugString.
 
   .section .crt0, "ax", %progbits
   .global _start
@@ -36,12 +38,13 @@ __nx_start:
   .cfi_endproc
   .size __nx_start, . - __nx_start
 
-  // Result svcOutputDebugString(const char* str, u64 size)
-  .global nx_output_debug_string
-  .type nx_output_debug_string, %function
-nx_output_debug_string:
+  // u32 fixture_write(const char* str, u64 size): Result
+  // svcOutputDebugString(const char* str, u64 size)
+  .global fixture_write
+  .type fixture_write, %function
+fixture_write:
   .cfi_startproc
   svc #0x27
   ret
   .cfi_endproc
-  .size nx_output_debug_string, . - nx_output_debug_string
+  .size fixture_write, . - fixture_write

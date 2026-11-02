@@ -3,7 +3,7 @@
 // flags, 128-bit arithmetic, bitfields, loads and stores of every width,
 // calls through pointers and tables, jump tables, tail calls, recursion,
 // varargs and atomics. Its output, one line per section, is compared
-// between the lifted program and the Unicorn oracle (tests/oracle).
+// between the lifted program and the Unicorn oracle (../oracle).
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -14,7 +14,7 @@ typedef uint32_t u32;
 typedef uint16_t u16;
 typedef uint8_t u8;
 
-u32 nx_output_debug_string(const char* s, u64 len);
+u32 fixture_write(const char* s, u64 len);
 u64 ops_flags(u64 a, u64 b);
 u64 ops_div(u64 a, u64 b);
 u64 ops_bits(u64 a, u64 b);
@@ -75,7 +75,7 @@ static void put_dec(u64 v) {
 }
 static void flush(void) {
   put_char('\n');
-  nx_output_debug_string(g_line, g_len);
+  fixture_write(g_line, g_len);
   g_len = 0;
 }
 static void report(const char* name, u64 v) {

@@ -32,17 +32,24 @@
       }
     },
     {
+      "name": "a64",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/out/build/a64",
+      "cacheVariables": {
+        "RECOMP_X86": "OFF", "RECOMP_PLATFORM_WIN32": "OFF", "RECOMP_HOST": "OFF", "RECOMP_A64": "ON"
+      }
+    },
+    {
+      "name": "a64-aarch64-qemu",
+      "inherits": "a64",
+      "binaryDir": "${sourceDir}/out/build/a64-aarch64-qemu",
+      "toolchainFile": "${sourceDir}/cmake/aarch64-linux-qemu.cmake"
+    },
+    {
       "name": "horizon",
       "inherits": "debug",
       "binaryDir": "${sourceDir}/out/build/horizon",
       "cacheVariables": { "RECOMP_X86": "OFF", "RECOMP_PLATFORM_WIN32": "OFF", "RECOMP_PLATFORM_HORIZON": "ON" }
-    },
-    {
-      "name": "horizon-aarch64-qemu",
-      "inherits": "horizon",
-      "binaryDir": "${sourceDir}/out/build/horizon-aarch64-qemu",
-      "toolchainFile": "${sourceDir}/cmake/aarch64-linux-qemu.cmake",
-      "cacheVariables": { "RECOMP_HOST": "OFF" }
     }
   ],
   "buildPresets": [
@@ -50,7 +57,8 @@
     { "name": "release", "configurePreset": "release" },
     { "name": "x86", "configurePreset": "x86" },
     { "name": "ppc", "configurePreset": "ppc" },
-    { "name": "horizon", "configurePreset": "horizon" },
-    { "name": "horizon-aarch64-qemu", "configurePreset": "horizon-aarch64-qemu" }
+    { "name": "a64", "configurePreset": "a64" },
+    { "name": "a64-aarch64-qemu", "configurePreset": "a64-aarch64-qemu" },
+    { "name": "horizon", "configurePreset": "horizon" }
   ]
 }

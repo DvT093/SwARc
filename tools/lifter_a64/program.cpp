@@ -49,6 +49,26 @@ std::vector<ImageReader>& Readers() {
 
 void RegisterImageReader(const ImageReader& r) { Readers().push_back(r); }
 
+void ImageFromModule(Image& img, recomp::a64::Module&& m, uint64_t base) {
+  using namespace recomp::a64;
+  img.base = base;
+  img.text_lo = base + m.text.off;
+  img.text_hi = img.text_lo + m.text.size;
+  img.AddStart(img.text_lo);
+  for (const FdeRange& r : EhFrameFunctions(m)) img.AddStart(base + r.start, r.size);
+  for (const Symbol& s : m.symbols) {
+    if (!s.defined || !s.func) continue;
+    img.names.emplace(base + s.value, s.name);
+    img.AddStart(base + s.value, s.size);
+  }
+  for (const Reloc& r : m.relocs) {
+    uint64_t t = base + uint64_t(r.addend);
+    if (r.type == kRelocAarch64Relative && t >= img.text_lo && t < img.text_hi && t % 4 == 0)
+      img.AddStart(t);
+  }
+  img.bytes = std::move(m.image);
+}
+
 bool Program::Load(const std::string& path, std::string& err) {
   for (const ImageReader& r : Readers())
     if (r.Match(path)) return r.Load(img_, path, err);

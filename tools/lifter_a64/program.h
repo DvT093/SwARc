@@ -1,8 +1,8 @@
 #pragma once
 // The module being lifted and its functions. Function starts come from the
-// image reader (for the Switch's NRO: the entry point, .eh_frame FDEs, sized
-// function symbols and relocation targets inside .text) and from branch
-// targets (platforms/horizon/ARCHITECTURE.md, "Modules and function
+// image reader (for a64/image.h's modules: the entry point, .eh_frame FDEs,
+// sized function symbols and relocation targets inside .text) and from
+// branch targets (src/a64/ARCHITECTURE.md, "Modules and function
 // discovery"); each function's instructions are those reachable from its
 // start within its range, so data after a return (literal pools) is never
 // decoded.
@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "a64.h"
+#include "a64/image.h"
 
 namespace lifter::a64 {
 
@@ -34,15 +35,21 @@ struct Image {
   }
 };
 
-// An executable format, read by a console platform's module (ARCHITECTURE.md,
-// "Console platforms"), which registers it from a static initialiser in the
-// source it adds to recomp_lift_a64. Match says whether a file is in its
-// format; Load fills the image.
+// An executable format: static-PIE ELF is the core's own (elf_reader.cpp);
+// a platform module (ARCHITECTURE.md, "Layout: base, CPU cores, platform
+// modules") registers its own from a static initialiser in the source it
+// adds to recomp_lift_a64. Match says whether a file is in its format;
+// Load fills the image.
 struct ImageReader {
   bool (*Match)(const std::string& path);
   bool (*Load)(Image& img, const std::string& path, std::string& err);
 };
 void RegisterImageReader(const ImageReader& r);
+
+// Fills img from a module loaded and relocated at `base`: the entry point
+// (the start of .text), .eh_frame FDEs, sized function symbols and
+// relative relocations that point into .text.
+void ImageFromModule(Image& img, recomp::a64::Module&& m, uint64_t base);
 
 struct Function {
   uint64_t va = 0;

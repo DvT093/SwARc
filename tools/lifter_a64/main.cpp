@@ -1,12 +1,13 @@
 // recomp_lift_a64: AArch64 -> C++ lifter (build-time only, never linked into a game).
 //   recomp_lift_a64 --image <module> --out <dir> [--files N] [--forms <dir>]
 // The module's format is whichever registered image reader (program.h)
-// claims it: a platform module adds its own (the Switch: NRO).
+// claims it: static-PIE ELF is the lifter's own, a platform module adds
+// its formats.
 // Writes <dir>/funcs_000.cpp .. funcs_<N-1>.cpp (N fixed, default 16, so a
 // build knows its outputs in advance) and <dir>/table.cpp. --forms writes
 // forms.cpp and forms.txt there: one lifted function per distinct
 // instruction form, for the differential test (lift_forms_test.cpp and
-// oracle.py forms in platforms/horizon/tests), and forms_native.S: each form's original
+// oracle.py forms in tests/a64), and forms_native.S: each form's original
 // instruction in a stub that runs it on an arm64 host's own CPU.
 
 #include <cstdio>
@@ -80,7 +81,7 @@ bool UsesX18(const Insn& i) {
   return false;
 }
 
-// The stub's frame: NativeState in platforms/horizon/tests/lift_forms.h.
+// The stub's frame: NativeState in tests/a64/lift_forms.h.
 std::string NativeStub(const std::string& name, uint32_t raw) {
   auto pairs = [](const char* op) {
     std::string s;

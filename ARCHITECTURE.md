@@ -1176,7 +1176,16 @@ only those below it.
   big-endian guest memory in a 4 GiB arena. A PowerPC platform adds its
   image reader to recomp_lift_ppc and defines what lifted code calls
   (Import, Sc, Trap, TimeBase); recomp_lift_ppc reads ELF itself, so the
-  core and its tests (tests/ppc) build without any platform.
+  core and its tests (tests/ppc) build without any platform. The AArch64
+  core (RECOMP_A64, which an AArch64 platform turns on; its design is
+  src/a64/ARCHITECTURE.md): the lifter recomp_lift_a64
+  (tools/lifter_a64) and the CPU model and dispatcher it targets
+  (src/a64, recomp_a64), with guest addresses as host addresses, and
+  position-independent modules (a64/image.h, recomp_a64_image). An
+  AArch64 platform adds its image reader to recomp_lift_a64 and defines
+  the kernel's supervisor calls (Svc); recomp_lift_a64 reads static-PIE
+  ELF itself, so the core and its tests (tests/a64) build without any
+  platform.
 - Platform modules (platforms/<name>, option RECOMP_PLATFORM_<NAME>):
   an OS and its system libraries on a core, with their own
   CMakeLists.txt, CLAUDE.md, docs and tests. Win32 (platforms/win32, on
@@ -1188,12 +1197,10 @@ only those below it.
   Console platforms are modules the same way, on the core of their CPU;
   a game's build compiles and links only its own platform. The Switch
   (platforms/horizon, RECOMP_PLATFORM_HORIZON; its design is
-  platforms/horizon/ARCHITECTURE.md) is AArch64: its core is the lifter
-  recomp_lift_a64 (tools/lifter_a64) and the CPU model and dispatcher it
-  targets (src/a64, recomp_a64). The Switch module adds the NRO/NSO image
-  reader to recomp_lift_a64, the address layout, process bring-up, the
-  kernel's supervisor calls (Svc, which a64/lifted.h declares and the
-  platform defines) and its HLE.
+  platforms/horizon/ARCHITECTURE.md) is one on the AArch64 core: it
+  turns on RECOMP_A64 and adds the NRO/NSO image reader to
+  recomp_lift_a64, the address layout, process bring-up, the kernel's
+  supervisor calls and its HLE.
 
 The x86 core knows no platform. A platform's loader (Win32's
 RunProcess) creates the process (StartProcess: the arena and the thunk
@@ -1227,9 +1234,9 @@ builds, such as a lifter's tests cross built for a host whose sysroot
 has none of its libraries. Each core and platform option is
 independent, so one tree can build several together (CMakePresets:
 debug for the x86 core with Win32, x86 for the x86 core alone, ppc for
-the PowerPC core alone, horizon for the Switch alone,
-horizon-aarch64-qemu for the Switch's CPU-only tests on an arm64 host
-under qemu-aarch64).
+the PowerPC core alone, a64 for the AArch64 core alone, a64-aarch64-qemu
+for the same on an arm64 host under qemu-aarch64, horizon for the Switch
+alone).
 
 ## Roadmap
 - 64-bit guests (above).
