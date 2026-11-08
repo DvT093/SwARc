@@ -1,7 +1,10 @@
 #pragma once
 // Host objects behind the DirectDraw 7 / Direct3D 7 interfaces, shared by
 // ddraw.cpp (DirectDraw, surfaces) and d3d7.cpp (Direct3D, devices,
-// vertex buffers).
+// vertex buffers). ddraw.cpp also serves the older DirectDraw interfaces
+// (IDirectDraw, IDirectDraw2, IDirectDrawSurface, IDirectDrawSurface2)
+// with the same objects; `version` on an object says which structure
+// sizes its caller uses.
 
 #include <memory>
 #include <vector>
@@ -54,6 +57,22 @@ constexpr uint32_t DDERR_NOTLOCKED = 0x887601E6;
 constexpr uint32_t DDERR_NOCOLORKEY = 0x887600D7;
 constexpr uint32_t DDERR_INVALIDPIXELFORMAT = 0x88760091;
 
+// DDSURFACEDESC (DirectDraw 1-5) is the first 108 bytes of DDSURFACEDESC2:
+// the same layout up to ddsCaps, which is a DDSCAPS (dwCaps only, at the
+// same offset) instead of a DDSCAPS2 followed by dwTextureStage.
+constexpr uint32_t kSurfaceDescSize = 108;
+static_assert(offsetof(guest::DDSURFACEDESC2, ddsCaps) + sizeof(guest::DDSCAPS) ==
+              kSurfaceDescSize);
+
+// Bytes of a surface description / of surface caps that a caller of
+// interface `version` (1, 2 or 7) passes.
+inline uint32_t SurfaceDescSize(int version) {
+  return version >= 4 ? uint32_t(sizeof(guest::DDSURFACEDESC2)) : kSurfaceDescSize;
+}
+inline uint32_t SurfaceCapsSize(int version) {
+  return version >= 4 ? uint32_t(sizeof(guest::DDSCAPS2)) : uint32_t(sizeof(guest::DDSCAPS));
+}
+
 template <typename T>
 T* G(uint32_t va) {
   return reinterpret_cast<T*>(GPtr(va));
@@ -79,6 +98,10 @@ State& St();
 gfx::Device* Gfx();
 
 struct Surface : com::Object {
+  // Interface version the surface was created through: 7, or 2 for
+  // surfaces of an IDirectDraw/IDirectDraw2 (published as
+  // IDirectDrawSurface2, which is also an IDirectDrawSurface).
+  int version = 7;
   enum class Kind { Primary, BackBuffer, Texture, ZBuffer, Offscreen };
   Kind kind = Kind::Offscreen;
   guest::DDSURFACEDESC2 desc{};  // as reported by GetSurfaceDesc
