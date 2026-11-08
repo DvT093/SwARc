@@ -1759,6 +1759,25 @@ HLE("user32.dll", GetMessageA, 4) {
   return m.msg == WM_QUIT ? 0 : 1;
 }
 
+HLE("user32.dll", WaitMessage, 0) {
+  // Blocks until the thread's queue has a message (e.g. a game that idles
+  // while its window is inactive).
+  for (;;) {
+    PumpHostEvents();
+    {
+      std::lock_guard<std::recursive_mutex> l(g_mu);
+      Queue& q = g_queues[CurrentThread()->tid];
+      if (!q.msgs.empty() || q.quit) return 1;
+    }
+    if (OnMainThread() && g_sdl_up) {
+      SDL_WaitEventTimeout(nullptr, 10);
+    } else {
+      std::unique_lock<std::recursive_mutex> l(g_mu);
+      g_queue_cv.wait_for(l, std::chrono::milliseconds(10));
+    }
+  }
+}
+
 HLE("user32.dll", PostMessageA, 4) {
   uint32_t hwnd = Arg(c, 0);
   if (!hwnd) {
