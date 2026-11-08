@@ -52,6 +52,18 @@ struct GameConfig : recomp::GameConfig {
   };
   Fullscreen fullscreen = Fullscreen::Desktop;
 
+  // CD-ROM drives the game expects its disc in. Each is a host directory
+  // holding the disc's files (an extracted image). GetDriveTypeA reports
+  // DRIVE_CDROM for the letter, GetVolumeInformationA the label, and guest
+  // paths on the drive read from the directory; writes land in the
+  // per-user tree (drive_<letter>), so the directory stays as on a disc.
+  struct CdDrive {
+    char letter = 'D';
+    std::string host_dir;
+    std::string label;
+  };
+  std::vector<CdDrive> cd_drives;
+
   // Video memory DirectDraw reports, in MB. Games pick detail settings
   // from it; a game's best profile may need more than the default.
   uint32_t video_memory_mb = 64;

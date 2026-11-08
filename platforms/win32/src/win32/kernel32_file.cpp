@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -177,6 +178,12 @@ bool CopyHostFile(const std::string& from, const std::string& to) {
 
 }  // namespace
 
+const win32::GameConfig::CdDrive* FindCdDrive(char letter) {
+  for (const auto& cd : Game().cd_drives)
+    if (std::toupper((unsigned char)cd.letter) == std::toupper((unsigned char)letter)) return &cd;
+  return nullptr;
+}
+
 std::string HostPath(const std::string& guest_path, PathAccess access) {
   std::string g = AbsGuest(guest_path);
   std::vector<std::string> comps;
@@ -198,6 +205,10 @@ std::string HostPath(const std::string& guest_path, PathAccess access) {
       CopyHostFile(inst, over);
     return over;
   }
+  // A CD-ROM drive reads from its host directory; writes go to the
+  // per-user tree below, as for any other drive.
+  if (access == PathAccess::kRead)
+    if (const auto* cd = FindCdDrive(g[0])) return Resolve(cd->host_dir, Components(g));
   // Everything else lives in the per-user tree, by drive letter.
   std::string root = UserDataRoot();
   if (g[0] != 'C') root += std::string("/drive_") + char(std::tolower(g[0]));
@@ -772,16 +783,37 @@ HLE("kernel32.dll", FindClose, 1) {
 
 // ---- volumes -----------------------------------------------------------------
 
-HLE("kernel32.dll", GetDriveTypeA, 1) { return 3; }  // DRIVE_FIXED
+// The drive letter of a root path ("D:\\", "D:", NULL = current drive).
+char RootLetter(gaddr root) {
+  if (!root) return AbsGuest(".")[0];
+  std::string r = GStr(root);
+  return r.empty() ? AbsGuest(".")[0] : r[0];
+}
+
+// DRIVE_CDROM (5) for the game's CD drives, DRIVE_FIXED (3) otherwise.
+HLE("kernel32.dll", GetDriveTypeA, 1) {
+  return FindCdDrive(RootLetter(Arg(c, 0))) ? 5 : 3;
+}
 
 HLE("kernel32.dll", GetLogicalDriveStringsA, 2) {
-  const char s[] = "C:\\\0";  // double-NUL terminated list
-  if (Arg(c, 0) < sizeof s) return sizeof s;
-  std::memcpy(GPtr(Arg(c, 1)), s, sizeof s);
-  return sizeof s - 1;
+  std::string s = std::string("C:\\") + '\0';
+  for (const auto& cd : Game().cd_drives)
+    s += std::string(1, char(std::toupper((unsigned char)cd.letter))) + ":\\" + '\0';
+  s += '\0';  // double-NUL terminated list
+  if (Arg(c, 0) < s.size()) return uint32_t(s.size());
+  std::memcpy(GPtr(Arg(c, 1)), s.data(), s.size());
+  return uint32_t(s.size() - 1);
 }
 
 HLE("kernel32.dll", GetVolumeInformationA, 8) {
+  if (const auto* cd = FindCdDrive(RootLetter(Arg(c, 0)))) {
+    if (Arg(c, 1) && Arg(c, 2)) PutStr(Arg(c, 1), cd->label);
+    if (Arg(c, 3)) Wr32(Arg(c, 3), kVolumeSerial ^ 0xCD);
+    if (Arg(c, 4)) Wr32(Arg(c, 4), 110);
+    if (Arg(c, 5)) Wr32(Arg(c, 5), 0x80001);  // read-only volume, case-sensitive search
+    if (Arg(c, 6) && Arg(c, 7)) PutStr(Arg(c, 6), "CDFS");
+    return 1;
+  }
   if (Arg(c, 1) && Arg(c, 2)) PutStr(Arg(c, 1), win32::Upper(Game().id));
   if (Arg(c, 3)) Wr32(Arg(c, 3), kVolumeSerial);
   if (Arg(c, 4)) Wr32(Arg(c, 4), 255);
