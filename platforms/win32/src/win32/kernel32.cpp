@@ -608,6 +608,20 @@ HLE("kernel32.dll", GlobalFree, 1) {
   return 0;
 }
 
+// LocalAlloc(flags, bytes): LMEM_MOVEABLE handles are plain pointers, as
+// for GlobalAlloc. LMEM_ZEROINIT (0x40) zeroes.
+HLE("kernel32.dll", LocalAlloc, 2) {
+  return HeapAllocProcess(Arg(c, 1), Arg(c, 0) & 0x40);
+}
+
+// LocalReAlloc(mem, bytes, flags): LMEM_MODIFY (0x80) changes only the
+// attributes; without LMEM_MOVEABLE (0x2) the block may not move.
+HLE("kernel32.dll", LocalReAlloc, 3) {
+  uint32_t flags = Arg(c, 2);
+  if (flags & 0x80) return Arg(c, 0);
+  return g_process_heap->ReAlloc(Arg(c, 0), Arg(c, 1), flags & 0x40, !(flags & 0x2));
+}
+
 HLE64("kernel32.dll", LocalFree, 1) {
   if (Arg(c, 0)) g_process_heap->Free(Arg(c, 0));
   return 0;

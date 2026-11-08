@@ -263,6 +263,49 @@ HLE64("kernel32.dll", lstrcpyA, 2) {
   return Arg(c, 0);
 }
 
+// CompareStringA/W(lcid, flags, s1, len1, s2, len2): CSTR_LESS_THAN 1,
+// CSTR_EQUAL 2, CSTR_GREATER_THAN 3. A length of -1 means NUL-terminated.
+// NORM_IGNORECASE (1) folds case; the other flags (ignore symbols,
+// width, kana) do not change Windows-1252 text and are ignored.
+// Ordinal comparison after folding, not the locale's sort weights.
+uint32_t CompareResult(const std::u16string& a0, const std::u16string& b0, uint32_t flags) {
+  std::u16string a = a0, b = b0;
+  if (flags & 1) {
+    auto fold = [](std::u16string& s) {
+      for (char16_t& ch : s)
+        if (ch < 0x100) ch = char16_t(std::tolower(int(ch)) & 0xFF);
+    };
+    fold(a);
+    fold(b);
+  }
+  int r = a.compare(b);
+  return r < 0 ? 1 : r == 0 ? 2 : 3;
+}
+
+std::u16string CountedA(gaddr va, int32_t len) {
+  if (len < 0) return Widen(GStr(va));
+  std::string s(size_t(len), '\0');
+  for (int32_t i = 0; i < len; i++) s[size_t(i)] = char(Rd8(va + uint32_t(i)));
+  return Widen(s);
+}
+
+std::u16string CountedW(gaddr va, int32_t len) {
+  if (len < 0) return GWStr(va);
+  std::u16string s(size_t(len), u'\0');
+  for (int32_t i = 0; i < len; i++) s[size_t(i)] = char16_t(Rd16(va + 2 * uint32_t(i)));
+  return s;
+}
+
+HLE("kernel32.dll", CompareStringA, 6) {
+  return CompareResult(CountedA(Arg(c, 2), int32_t(Arg(c, 3))),
+                       CountedA(Arg(c, 4), int32_t(Arg(c, 5))), Arg(c, 1));
+}
+
+HLE("kernel32.dll", CompareStringW, 6) {
+  return CompareResult(CountedW(Arg(c, 2), int32_t(Arg(c, 3))),
+                       CountedW(Arg(c, 4), int32_t(Arg(c, 5))), Arg(c, 1));
+}
+
 HLE("kernel32.dll", IsDBCSLeadByte, 1) { return 0; }    // CP1252: no DBCS
 HLE("kernel32.dll", IsDBCSLeadByteEx, 2) { return 0; }
 

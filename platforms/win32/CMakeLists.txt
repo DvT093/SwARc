@@ -31,6 +31,7 @@ add_library(recomp_win32 SHARED
   src/win32/kernel32_seh.cpp
   src/win32/seh64.cpp
   src/win32/kernel32_misc.cpp
+  src/win32/kernel32_profile.cpp
   src/win32/advapi32.cpp
   src/win32/user32_input.cpp
   src/win32/user32_window.cpp
