@@ -64,10 +64,11 @@ endif()
 
 
 
-# DirectDraw 7 / Direct3D 7 over gfx::Device.
+# DirectDraw 1-7, Direct3D 7 and Direct3D 2 over gfx::Device.
 add_library(recomp_d3d7 SHARED
   src/win32/ddraw.cpp
-  src/win32/d3d7.cpp)
+  src/win32/d3d7.cpp
+  src/win32/d3d2.cpp)
 target_link_libraries(recomp_d3d7 PUBLIC recomp_win32 recomp_gfx)
 
 # XInput 1.3 on SDL gamepads, and the WMI that tells games which

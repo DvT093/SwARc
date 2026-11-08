@@ -184,6 +184,25 @@ void InitDefaults(Device& d) {
 
 }  // namespace
 
+guest::D3DDEVICEDESC7 DeviceDesc7(bool tnl) { return DeviceDesc(tnl); }
+
+void InitDeviceStates(uint32_t rs[256], uint32_t tss[8][32]) {
+  Device d;
+  InitDefaults(d);
+  std::memcpy(rs, d.rs, sizeof d.rs);
+  std::memcpy(tss, d.tss, sizeof d.tss);
+}
+
+void DeviceFpuSetup(Ctx& c, const char* api) {
+  uint32_t coop = St().coop_flags;
+  if (coop & (0x800 | 0x1000)) return;  // FPUSETUP or FPUPRESERVE
+  uint16_t cw = x87::ControlWord(c.fpu);
+  uint16_t ncw = uint16_t((cw & ~0x0300u) | 0x003F);  // PC=24, mask all
+  x87::SetControlWord(c.fpu, ncw);
+  std::fprintf(stderr, "%s: CreateDevice set the FPU to single precision "
+                       "(cw %04X -> %04X)\n", api, cw, ncw);
+}
+
 uint32_t D3D7For(uint32_t dd) {
   auto d3d = std::make_shared<Direct3D>();
   d3d->ddraw = dd;
@@ -281,13 +300,7 @@ HLE_NAMED("ddraw.dll", "IDirect3D7::CreateDevice", D3D7_CreateDevice, 4) {
   Wr32(out, com::Publish(d, DeviceVtable()));
 
   uint32_t coop = St().coop_flags;
-  if (!(coop & (0x800 | 0x1000))) {  // neither FPUSETUP nor FPUPRESERVE
-    uint16_t cw = x87::ControlWord(c.fpu);
-    uint16_t ncw = uint16_t((cw & ~0x0300u) | 0x003F);  // PC=24, mask all
-    x87::SetControlWord(c.fpu, ncw);
-    std::fprintf(stderr, "d3d7: CreateDevice set the FPU to single precision "
-                         "(cw %04X -> %04X)\n", cw, ncw);
-  }
+  DeviceFpuSetup(c, "d3d7");
   std::fprintf(stderr, "d3d7: CreateDevice(%s) on %dx%d target, coop flags %X\n",
                d->tnl ? "T&L HAL" : "HAL", t->width, t->height, coop);
   return D3D_OK;

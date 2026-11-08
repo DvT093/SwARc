@@ -116,6 +116,11 @@ struct Surface : com::Object {
   Surface* zbuffer = nullptr;   // attached Z buffer (render targets)
   bool has_ck_src = false;
   guest::DDCOLORKEY ck_src{};
+  // Texture of an older interface (DirectX 5 and before) with a source
+  // colour key: its gfx texture is A8R8G8B8 with alpha 0 where a texel
+  // equals the key, for Direct3D 2's D3DRENDERSTATE_COLORKEYENABLE (the gfx
+  // device has no colour keys; d3d2.cpp turns it into an alpha test).
+  bool keyed = false;
   bool locked = false;
   // Back buffer and primary: `mem` mirrors the GPU image lazily. Lock
   // reads back only what the game touches, Unlock uploads only rows it
@@ -127,8 +132,24 @@ struct Surface : com::Object {
 
 // Uploads a texture level's guest memory to the gfx texture.
 void UploadLevel(Surface& s);
+// Makes a top-level texture of an older interface with a source colour key
+// `keyed` (all its levels), or uploads it again for a changed key.
+void KeyTexture(Surface& top);
 
 // New IDirect3D7 for an IDirectDraw7 (QueryInterface), d3d7.cpp.
 uint32_t D3D7For(uint32_t dd);
+
+// Shared with Direct3D 2 (d3d2.cpp), from d3d7.cpp: the HAL device's
+// caps, the device's initial render and texture stage states, and the
+// FPU switch to single precision that device creation makes unless the
+// cooperative level asked to keep it (`api` names the caller in the log).
+guest::D3DDEVICEDESC7 DeviceDesc7(bool tnl);
+void InitDeviceStates(uint32_t rs[256], uint32_t tss[8][32]);
+void DeviceFpuSetup(Ctx& c, const char* api);
+
+// New IDirect3D2 for an IDirectDraw2 (QueryInterface), and a new
+// IDirect3DTexture2 for a texture surface (QueryInterface), d3d2.cpp.
+uint32_t D3D2For(uint32_t dd);
+uint32_t Texture2For(uint32_t surface);
 
 }  // namespace recomp::ddraw

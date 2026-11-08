@@ -59,8 +59,8 @@ constexpr guest::GUID kIID_IDirectDraw = {0x6C14DB80, 0xA733, 0x11CE, {0xA5, 0x2
 constexpr guest::GUID kIID_IDirectDraw2 = {0xB3A6F3E0, 0x2B43, 0x11CF, {0xA2, 0xDE, 0x00, 0xAA, 0x00, 0xB9, 0x33, 0x56}};
 constexpr guest::GUID kIID_IDirectDrawSurface = {0x6C14DB81, 0xA733, 0x11CE, {0xA5, 0x21, 0x00, 0x20, 0xAF, 0x0B, 0xE5, 0x60}};
 constexpr guest::GUID kIID_IDirectDrawSurface2 = {0x57805885, 0x6EEC, 0x11CF, {0x94, 0x41, 0xA8, 0x23, 0x03, 0xC1, 0x0E, 0x27}};
-// Direct3D 2 (DirectX 5), which DirectDraw 2 objects and surfaces are
-// asked for; not implemented, so asking for them is fatal by name.
+// Direct3D 2 (DirectX 5, d3d2.cpp), which DirectDraw 2 objects and
+// texture surfaces are asked for.
 constexpr guest::GUID kIID_IDirect3D2 = {0x6AAE1EC1, 0x662A, 0x11D0, {0x88, 0x9D, 0x00, 0xAA, 0x00, 0xBB, 0xB7, 0x6A}};
 constexpr guest::GUID kIID_IDirect3DTexture2 = {0x93281502, 0x8CF8, 0x11D0, {0x89, 0xAB, 0x00, 0xA0, 0xC9, 0x05, 0x41, 0x29}};
 
@@ -225,7 +225,59 @@ Surface::~Surface() {
 void UploadLevel(Surface& s) {
   if (!s.tex || !s.mem) return;
   gfx::Rect r{0, 0, s.width, s.height};
-  Gfx()->UpdateTexture(s.tex, s.level, r, GPtr(s.mem), s.pitch);
+  if (!s.keyed) {
+    Gfx()->UpdateTexture(s.tex, s.level, r, GPtr(s.mem), s.pitch);
+    return;
+  }
+  // A8R8G8B8 with alpha 0 where the texel is the colour key; other texels
+  // keep their alpha but at least 1, so that the colour-key alpha test
+  // (alpha > 0) keeps them even where the texture's own alpha is 0 (which
+  // without blending does not hide a texel).
+  std::vector<uint32_t> px(size_t(s.width) * size_t(s.height));
+  uint32_t bpp = gfx::BitsPerPixel(s.fmt) / 8;
+  uint32_t key = s.ck_src.dwColorSpaceLowValue;
+  for (int y = 0; y < s.height; y++) {
+    const uint8_t* row = GPtr(s.mem + uint32_t(y) * s.pitch);
+    for (int x = 0; x < s.width; x++) {
+      const uint8_t* p = row + uint32_t(x) * bpp;
+      uint32_t argb = gfx::DecodePixel(p, s.fmt);
+      if (s.has_ck_src && gfx::RawPixel(p, s.fmt) == key)
+        argb &= 0x00FFFFFF;
+      else if (!(argb >> 24))
+        argb |= 0x01000000;
+      px[size_t(y) * size_t(s.width) + size_t(x)] = argb;
+    }
+  }
+  Gfx()->UpdateTexture(s.tex, s.level, r, px.data(), uint32_t(s.width) * 4);
+}
+
+void KeyTexture(Surface& top) {
+  if (top.version >= 4 || top.kind != Surface::Kind::Texture || top.level != 0 ||
+      !top.tex || !top.has_ck_src || gfx::IsCompressed(top.fmt) ||
+      top.fmt == gfx::Format::P8)
+    return;
+  std::vector<Surface*> chain;
+  for (Surface* s = &top; s; s = s->attached.empty() ? nullptr : s->attached[0].get())
+    if (s->kind == Surface::Kind::Texture) chain.push_back(s);
+  if (!top.keyed) {
+    gfx::TextureId tex = Gfx()->CreateTexture(top.width, top.height, int(chain.size()),
+                                              gfx::Format::A8R8G8B8,
+                                              (top.desc.ddsCaps.dwCaps & DDSCAPS_3DDEVICE) != 0);
+    if (!tex) {
+      WarnF("ddraw: no texture for a colour-keyed %dx%d texture\n", top.width, top.height);
+      return;
+    }
+    Gfx()->DestroyTexture(top.tex);
+    for (Surface* s : chain) {
+      s->tex = tex;
+      s->keyed = true;
+    }
+  }
+  for (Surface* s : chain) {
+    s->has_ck_src = true;
+    s->ck_src = top.ck_src;
+    UploadLevel(*s);
+  }
 }
 
 namespace {
@@ -786,9 +838,10 @@ HLE_NAMED("ddraw.dll", "IDirectDraw::QueryInterface", DD_QueryInterface, 3) {
     Wr32(out, NewDirectDraw(want));
     return DD_OK;
   }
-  if (com::GuidEq(iid, kIID_IDirect3D2))
-    FatalF("unimplemented interface ddraw.dll!IDirect3D2 (IDirectDraw%s::QueryInterface)",
-           VersionOf(self) == 2 ? "2" : "");
+  if (com::GuidEq(iid, kIID_IDirect3D2)) {
+    Wr32(out, D3D2For(self));
+    return DD_OK;
+  }
   guest::GUID g = com::ReadGuid(iid);
   WarnF("IDirectDraw::QueryInterface({%08X-...}): no interface\n", g.Data1);
   Wr32(out, 0);
@@ -991,9 +1044,15 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface2::QueryInterface", DDS2_QueryInterfac
     Wr32(out, self);
     return DD_OK;
   }
-  if (com::GuidEq(iid, kIID_IDirect3DTexture2))
-    FatalF("unimplemented interface ddraw.dll!IDirect3DTexture2 "
-           "(IDirectDrawSurface2::QueryInterface)");
+  if (com::GuidEq(iid, kIID_IDirect3DTexture2)) {
+    Surface* s = com::As<Surface>(self);
+    if (!s || s->kind != Surface::Kind::Texture) {
+      Wr32(out, 0);
+      return com::kE_NOINTERFACE;
+    }
+    Wr32(out, Texture2For(self));
+    return DD_OK;
+  }
   guest::GUID g = com::ReadGuid(iid);
   WarnF("IDirectDrawSurface2::QueryInterface({%08X-...}): no interface\n", g.Data1);
   Wr32(out, 0);
@@ -1172,6 +1231,7 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::SetColorKey", DDS7_SetColorKey, 3) 
     } else {
       s->desc.dwFlags &= ~DDSD_CKSRCBLT;
     }
+    if (s->keyed || ck) KeyTexture(*s);
     return DD_OK;
   }
   WarnF("ddraw: SetColorKey flags %X unsupported\n", flags);
