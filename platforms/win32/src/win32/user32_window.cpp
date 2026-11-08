@@ -861,6 +861,8 @@ void InjectTestFocus() {
 //   <t> click [left|right]
 //   <t> key <SDL scancode name> [seconds]   e.g. Escape, Return, Space, A;
 //                         held for that long (default 0.08)
+//   <t> resize <w> <h>    the user resizes the host window to w x h
+//                         points (logged with the next presentation)
 // '#' starts a comment.
 struct TestEvent {
   double t;
@@ -947,6 +949,12 @@ void InjectTestInput() {
         e.type = SDL_EVENT_KEY_UP;
         e.key.down = false;
         q.push_back({t + (n >= 4 ? std::atof(b) : 0.08), e});
+      } else if (c == "resize" && n == 4) {
+        SDL_Event e{};
+        e.type = SDL_EVENT_USER;
+        e.user.code = std::atoi(a);
+        e.user.data1 = reinterpret_cast<void*>(intptr_t(std::atoi(b)));
+        q.push_back({t, e});
       } else {
         WarnF("TEST_INPUT: bad line: %s", line);
       }
@@ -955,6 +963,13 @@ void InjectTestInput() {
     std::stable_sort(q.begin(), q.end(),
                      [](const TestEvent& x, const TestEvent& y) { return x.t < y.t; });
     WarnF("TEST_INPUT: %zu events from %s\n", q.size(), path);
+  }
+  // pumps until a resize is logged
+  static int report_resize = 0;
+  if (report_resize && !--report_resize) {
+    gfx::Presentation p = gfx::LastPresentation();
+    WarnF("TEST_INPUT: %dx%d frame shown in a %dx%d output at (%d,%d)-(%d,%d)\n", p.src_w,
+          p.src_h, p.out_w, p.out_h, p.rect.left, p.rect.top, p.rect.right, p.rect.bottom);
   }
   if (next >= q.size()) return;
   double t = (SDL_GetTicks() - t0) / 1000.0;
@@ -969,6 +984,13 @@ void InjectTestInput() {
   bool moved = false;
   while (next < q.size() && q[next].t <= t) {
     SDL_Event e = q[next].e;
+    if (e.type == SDL_EVENT_USER) {
+      SDL_SetWindowSize(SDL_GetWindowFromID(id), e.user.code,
+                        int(reinterpret_cast<intptr_t>(e.user.data1)));
+      report_resize = 10;
+      next++;
+      continue;
+    }
     if (e.type == SDL_EVENT_MOUSE_MOTION) {
       if (moved) break;
       moved = true;
@@ -1253,9 +1275,12 @@ HLE("user32.dll", CreateWindowExA, 12) {
     EnsureSdlVideo();
     int cw, ch;
     ClientSize(win, &cw, &ch);
+    // Resizable (and maximisable) by the user: the game keeps its client
+    // size, present scales the frame into the window with its aspect kept
+    // (black bars), and the pointer maps back the same way.
     win.sdl = SDL_CreateWindow(AnsiToUtf8(win.title).c_str(), ToPoints(nullptr, cw), ToPoints(nullptr, ch),
-                               SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                   GfxWindowFlags());
+                               SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE |
+                                   SDL_WINDOW_HIGH_PIXEL_DENSITY | GfxWindowFlags());
     if (!win.sdl) FatalF("SDL_CreateWindow: %s", SDL_GetError());
   }
   uint32_t hwnd = win.hwnd;
