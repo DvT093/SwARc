@@ -338,12 +338,32 @@ void WriteFormat(uint32_t va, uint32_t size, const Format& f) {
 // ---- DirectSoundCreate8 and IDirectSound8
 
 // (lpcGuidDevice, ppDS8, pUnkOuter)
-HLE_NAMED("dsound.dll", "#11", DirectSoundCreate8, 3) {
+uint32_t CreateDirectSound(Ctx& c) {
   if (!Arg(c, 1)) return DSERR_INVALIDPARAM;
   Wr32(Arg(c, 1), 0);
   if (Arg(c, 2)) return DSERR_NOAGGREGATION;
   if (!M().Open(48000)) return DSERR_NODRIVER;
   Wr32(Arg(c, 1), com::Publish(std::make_shared<DirectSound>(), DirectSoundVtable()));
+  return DS_OK;
+}
+
+HLE_NAMED("dsound.dll", "#11", DirectSoundCreate8, 3) { return CreateDirectSound(c); }
+
+// DirectSoundCreate (games from before DirectX 8): an IDirectSound, which
+// is the IDirectSound8 object (its vtable starts with IDirectSound's 11
+// methods, the same arguments; buffers are IDirectSoundBuffer either way).
+HLE("dsound.dll", DirectSoundCreate, 3) { return CreateDirectSound(c); }
+
+// DirectSoundEnumerateA(callback, context): the primary sound driver (NULL
+// GUID), the one device there is. Callback: BOOL(GUID*, LPCSTR description,
+// LPCSTR module, LPVOID context).
+HLE("dsound.dll", DirectSoundEnumerateA, 2) {
+  uint32_t cb = Arg(c, 0), ctx = Arg(c, 1);
+  uint32_t strs = HeapAllocProcess(64, true);
+  PutStr(strs, "Primary Sound Driver");
+  PutStr(strs + 48, "");
+  CallGuest(c, cb, {0, strs, strs + 48, ctx});
+  HeapFreeProcess(strs);
   return DS_OK;
 }
 
