@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "runtime/log.h"
+#include "runtime/pacing.h"
 #include "x86/runtime.h"
 #include "x86/watchdog.h"
 
@@ -45,6 +46,15 @@ void PresentFrame(gfx::Device& dev, int w, int h) {
     }
   }
   dev.Present();
+  // GameConfig::max_fps / <ID>_MAX_FPS: wait for the next frame's slot.
+  static const double max_fps = [] {
+    const char* e = Env("MAX_FPS");
+    return e ? std::atof(e) : g_proc->game.max_fps;
+  }();
+  if (max_fps > 0) {
+    static FramePacer pacer;
+    pacer.Wait(max_fps);
+  }
   // Loading screens present without pumping messages; keep answering the
   // window system (compositor pings) so the window does not look hung.
   // Events are only queued for the game, as Windows would.

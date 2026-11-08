@@ -24,6 +24,11 @@ struct GameConfig {
   // $XDG_DATA_HOME/<id>, and dev/test switches are read from environment
   // variables named <ID>_<SWITCH> (GAME_TRACE, ...).
   std::string id;
+  // Frames per second presented frames are paced to (FramePacer), for
+  // games whose speed or feel depends on the frame rate and that have no
+  // limiter of their own; 0: as fast as they come. <ID>_MAX_FPS
+  // overrides it (0 to uncap).
+  double max_fps = 0;
 };
 
 // Dev/test switch `name` from the environment: getenv("<ID>_<name>"),
