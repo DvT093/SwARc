@@ -426,6 +426,12 @@ HLE("user32.dll", MessageBoxA, 4) {
   return ShowMessageBox(Arg(c, 0), GStr(Arg(c, 1)), GStr(Arg(c, 2)), Arg(c, 3));
 }
 
+// MessageBoxExA(hwnd, text, caption, type, language): the language of the
+// buttons is the host's.
+HLE("user32.dll", MessageBoxExA, 5) {
+  return ShowMessageBox(Arg(c, 0), GStr(Arg(c, 1)), GStr(Arg(c, 2)), Arg(c, 3));
+}
+
 HLE("user32.dll", MessageBoxW, 4) {
   return ShowMessageBox(Arg(c, 0), Narrow(GWStr(Arg(c, 1))),
                         Narrow(GWStr(Arg(c, 2))), Arg(c, 3));
