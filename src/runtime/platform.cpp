@@ -11,6 +11,7 @@
 #include "runtime/platform.h"
 
 #include <errno.h>
+#include <string.h>
 #include <signal.h>
 #include <time.h>
 #include <ucontext.h>
@@ -33,9 +34,16 @@ ucontext_t g_caller_ctx, g_stack_ctx;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 void RunOnStack(void* stack, size_t size, void (*fn)()) {
+  // macOS's makecontext gives fn's caller (_ctx_start) a frame record whose
+  // saved frame pointer is the stack's top, so backtrace() (crash reports,
+  // hang dumps) reads the 16 bytes there: past the end of the stack, a
+  // fault when nothing is mapped after it. Keep zeros at the top, which end
+  // the frame chain.
+  constexpr size_t kChainEnd = 64;
+  memset(static_cast<char*>(stack) + size - kChainEnd, 0, kChainEnd);
   getcontext(&g_stack_ctx);
   g_stack_ctx.uc_stack.ss_sp = stack;
-  g_stack_ctx.uc_stack.ss_size = size;
+  g_stack_ctx.uc_stack.ss_size = size - kChainEnd;
   g_stack_ctx.uc_link = &g_caller_ctx;  // resume here on return
   makecontext(&g_stack_ctx, fn, 0);
   swapcontext(&g_caller_ctx, &g_stack_ctx);
