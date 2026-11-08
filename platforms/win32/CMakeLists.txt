@@ -77,7 +77,8 @@ add_library(recomp_xinput SHARED src/win32/xinput.cpp
 target_link_libraries(recomp_xinput PUBLIC recomp_win32)
 
 # DirectInput 8 (keyboard and mouse) on the event pump's raw input; it
-# lists the XInput pads as game controllers.
+# lists the XInput pads as game controllers. Also DirectInput 3/5
+# (dinput.dll) on the same devices.
 add_library(recomp_dinput8 SHARED src/win32/dinput8.cpp)
 target_link_libraries(recomp_dinput8 PUBLIC recomp_win32 recomp_xinput)
 

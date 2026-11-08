@@ -1,5 +1,17 @@
 // dinput8: DirectInput8Create, IDirectInput8A and IDirectInputDevice8A for
-// the system keyboard and mouse.
+// the system keyboard and mouse; and dinput: DirectInputCreateA,
+// IDirectInputA/IDirectInput2A and IDirectInputDeviceA/IDirectInputDevice2A
+// for games written against DirectX 3 and 5.
+//
+// The older interfaces are the DirectInput 8 ones cut short (IDirectInput8A
+// starts with IDirectInputA's 8 methods, IDirectInputDevice8A with
+// IDirectInputDevice2A's 27, same arguments), so most of their methods are
+// the DirectInput 8 handlers registered under the older names. What
+// differs: the device types (DIDEVTYPE_* instead of DI8DEVTYPE_*), so
+// EnumDevices has its own handler, and the sizes of DIDEVCAPS and
+// DIDEVICEINSTANCEA, which DirectX 3 callers pass without the fields
+// DirectX 5 added; objects carry the version DirectInputCreateA was
+// given for that.
 //
 // Input comes from the event pump's raw input (input_state.h): the
 // keyboard by DIK code, the mouse in mickeys. Each acquired device keeps
@@ -15,6 +27,8 @@
 #include <deque>
 #include <mutex>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "runtime/log.h"
 #include "win32/com.h"
@@ -34,6 +48,10 @@ constexpr GUID kGUID_SysKeyboard = {0x6F1D2B61, 0xD5A0, 0x11CF, {0xBF, 0xC7, 0x4
 constexpr GUID kIID_IUnknown = {0x00000000, 0x0000, 0x0000, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
 constexpr GUID kIID_IDirectInput8A = {0xBF798030, 0x483A, 0x4DA2, {0xAA, 0x99, 0x5D, 0x64, 0xED, 0x36, 0x97, 0x00}};
 constexpr GUID kIID_IDirectInputDevice8A = {0x54D41080, 0xDC15, 0x4833, {0xA4, 0x1B, 0x74, 0x8F, 0x73, 0xA3, 0x81, 0x79}};
+constexpr GUID kIID_IDirectInputA = {0x89521360, 0xAA8A, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+constexpr GUID kIID_IDirectInput2A = {0x5944E662, 0xAA8A, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+constexpr GUID kIID_IDirectInputDeviceA = {0x5944E680, 0xC92E, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
+constexpr GUID kIID_IDirectInputDevice2A = {0x5944E682, 0xC92E, 0x11CF, {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}};
 
 constexpr uint32_t DI_OK = 0;
 constexpr uint32_t DI_BUFFEROVERFLOW = 1;
@@ -54,6 +72,14 @@ constexpr uint32_t DI8DEVTYPE_MOUSE = 0x12, DI8DEVTYPE_KEYBOARD = 0x13,
 constexpr uint32_t kMouseType = DI8DEVTYPE_MOUSE | (2 << 8);        // traditional
 constexpr uint32_t kKeyboardType = DI8DEVTYPE_KEYBOARD | (4 << 8);  // PC enhanced
 constexpr uint32_t kGamepadType = DI8DEVTYPE_GAMEPAD | (2 << 8) | 0x10000;  // standard, HID
+// Before DirectInput 8 (EnumDevices filter and dwDevType alike).
+constexpr uint32_t DIDEVTYPE_MOUSE = 2, DIDEVTYPE_KEYBOARD = 3,
+                   DIDEVTYPE_JOYSTICK = 4;
+constexpr uint32_t kLegacyMouseType = DIDEVTYPE_MOUSE | (2 << 8);        // traditional
+constexpr uint32_t kLegacyKeyboardType = DIDEVTYPE_KEYBOARD | (4 << 8);  // PC enhanced
+// DIDEVCAPS and DIDEVICEINSTANCEA as DirectX 3 has them (DirectX 5 added
+// the force feedback fields and the HID usage).
+constexpr uint32_t kDIDEVCAPS_DX3 = 24, kDIDEVICEINSTANCEA_DX3 = 560;
 
 constexpr uint32_t DISCL_EXCLUSIVE = 0x1;
 constexpr uint32_t DIGDD_PEEK = 0x1;
@@ -86,9 +112,14 @@ struct DIDEVICEOBJECTDATA {
   uint32_t dwOfs, dwData, dwTimeStamp, dwSequence, uAppData;
 };
 
-struct Direct8 : com::Object {};
+// `version`: DirectInput8Create's 0x800, or what a DirectX 3/5 game gave
+// DirectInputCreateA (0x300, 0x500); its devices get it too.
+struct Direct8 : com::Object {
+  uint32_t version = 0x800;
+};
 
 struct InputDevice : com::Object {
+  uint32_t version = 0x800;
   bool keyboard = false;
   uint32_t data_size = 0;  // the data format's state size; 0 = not set
   uint32_t coop = 0;
@@ -175,18 +206,21 @@ void Unacquire(InputDevice& d) {
 
 InputDevice::~InputDevice() { Unacquire(*this); }
 
-uint32_t DirectInputVtable() {
-  return com::Vtable("dinput8.dll", "IDirectInput8A",
-                     {"QueryInterface", "AddRef", "Release", "CreateDevice",
-                      "EnumDevices", "GetDeviceStatus", "RunControlPanel",
-                      "Initialize", "FindDevice", "EnumDevicesBySemantics",
-                      "ConfigureDevices"});
+uint32_t DirectInputVtable(uint32_t version) {
+  static const std::vector<const char*> methods = {
+      "QueryInterface", "AddRef", "Release", "CreateDevice",
+      "EnumDevices", "GetDeviceStatus", "RunControlPanel",
+      "Initialize", "FindDevice", "EnumDevicesBySemantics",
+      "ConfigureDevices"};
+  if (version >= 0x800) return com::Vtable("dinput8.dll", "IDirectInput8A", methods);
+  // IDirectInput2A: IDirectInputA's 8 methods and FindDevice; one vtable
+  // serves both.
+  return com::Vtable("dinput.dll", "IDirectInput2A", {methods.begin(), methods.begin() + 9});
 }
 
-uint32_t DeviceVtable() {
-  return com::Vtable(
-      "dinput8.dll", "IDirectInputDevice8A",
-      {"QueryInterface", "AddRef", "Release", "GetCapabilities", "EnumObjects",
+uint32_t DeviceVtable(uint32_t version) {
+  static const std::vector<const char*> methods = {
+      "QueryInterface", "AddRef", "Release", "GetCapabilities", "EnumObjects",
        "GetProperty", "SetProperty", "Acquire", "Unacquire", "GetDeviceState",
        "GetDeviceData", "SetDataFormat", "SetEventNotification",
        "SetCooperativeLevel", "GetObjectInfo", "GetDeviceInfo",
@@ -194,7 +228,12 @@ uint32_t DeviceVtable() {
        "GetEffectInfo", "GetForceFeedbackState", "SendForceFeedbackCommand",
        "EnumCreatedEffectObjects", "Escape", "Poll", "SendDeviceData",
        "EnumEffectsInFile", "WriteEffectToFile", "BuildActionMap",
-       "SetActionMap", "GetImageInfo"});
+       "SetActionMap", "GetImageInfo"};
+  if (version >= 0x800) return com::Vtable("dinput8.dll", "IDirectInputDevice8A", methods);
+  // IDirectInputDevice2A: the first 27 (IDirectInputDeviceA's 18, then the
+  // force feedback methods, Poll and SendDeviceData); one vtable serves
+  // both.
+  return com::Vtable("dinput.dll", "IDirectInputDevice2A", {methods.begin(), methods.begin() + 27});
 }
 
 InputDevice* Dev(Ctx& c) {
@@ -203,15 +242,23 @@ InputDevice* Dev(Ctx& c) {
   return d;
 }
 
-void FillInstance(DIDEVICEINSTANCEA* di, bool keyboard) {
-  std::memset(di, 0, sizeof *di);
-  di->dwSize = sizeof *di;
-  di->guidInstance = di->guidProduct = keyboard ? kGUID_SysKeyboard : kGUID_SysMouse;
-  di->dwDevType = keyboard ? kKeyboardType : kMouseType;
-  std::snprintf(di->tszInstanceName, sizeof di->tszInstanceName, keyboard ? "Keyboard" : "Mouse");
-  std::snprintf(di->tszProductName, sizeof di->tszProductName, keyboard ? "Keyboard" : "Mouse");
-  di->wUsagePage = 1;              // generic desktop
-  di->wUsage = keyboard ? 6 : 2;   // keyboard / mouse
+// Fills the DIDEVICEINSTANCEA at `di` for the keyboard or the mouse: its
+// first `size` bytes (580, or 560 for DirectX 3 callers), with the device
+// types of DirectInput `version`.
+void FillInstance(DIDEVICEINSTANCEA* di, bool keyboard, uint32_t version = 0x800,
+                  uint32_t size = sizeof(DIDEVICEINSTANCEA)) {
+  DIDEVICEINSTANCEA f{};
+  f.dwSize = size;
+  f.guidInstance = f.guidProduct = keyboard ? kGUID_SysKeyboard : kGUID_SysMouse;
+  if (version >= 0x800)
+    f.dwDevType = keyboard ? kKeyboardType : kMouseType;
+  else
+    f.dwDevType = keyboard ? kLegacyKeyboardType : kLegacyMouseType;
+  std::snprintf(f.tszInstanceName, sizeof f.tszInstanceName, keyboard ? "Keyboard" : "Mouse");
+  std::snprintf(f.tszProductName, sizeof f.tszProductName, keyboard ? "Keyboard" : "Mouse");
+  f.wUsagePage = 1;             // generic desktop
+  f.wUsage = keyboard ? 6 : 2;  // keyboard / mouse
+  std::memcpy(di, &f, size);
 }
 
 void FillPadInstance(DIDEVICEINSTANCEA* di, const XInputPad& pad) {
@@ -244,7 +291,27 @@ HLE("dinput8.dll", DirectInput8Create, 5) {
     return DIERR_NOINTERFACE;
   }
   RECOMP_TRACE("  DirectInput8Create version %X\n", uint32_t(Arg(c, 1)));
-  Wr32(out, com::Publish(std::make_shared<Direct8>(), DirectInputVtable()));
+  Wr32(out, com::Publish(std::make_shared<Direct8>(), DirectInputVtable(0x800)));
+  return DI_OK;
+}
+
+// DirectInputCreateA(hinst, dwVersion, lplpDirectInput, punkOuter): an
+// IDirectInputA (also an IDirectInput2A) for DirectX 3 or 5 callers.
+HLE("dinput.dll", DirectInputCreateA, 4) {
+  uint32_t version = Arg(c, 1), out = Arg(c, 2);
+  RECOMP_TRACE("  DirectInputCreateA version %X\n", version);
+  if (Arg(c, 3)) {
+    Wr32(out, 0);
+    return DIERR_NOINTERFACE;  // no aggregation
+  }
+  if (version < 0x300 || version >= 0x800) {
+    Wr32(out, 0);
+    // DIERR_OLDDIRECTINPUTVERSION / DIERR_BETADIRECTINPUTVERSION
+    return version < 0x300 ? 0x8007047E : 0x80070481;
+  }
+  auto di = std::make_shared<Direct8>();
+  di->version = version;
+  Wr32(out, com::Publish(di, DirectInputVtable(version)));
   return DI_OK;
 }
 
@@ -253,6 +320,12 @@ HLE("dinput8.dll", DirectInput8Create, 5) {
 HLE_NAMED("dinput8.dll", "IDirectInput8A::QueryInterface", DI8_QueryInterface, 3) {
   return QueryInterfaceFor(c, kIID_IDirectInput8A);
 }
+// IDirectInputA and IDirectInput2A are the same object.
+HLE_NAMED("dinput.dll", "IDirectInput2A::QueryInterface", DI2_QueryInterface, 3) {
+  if (com::GuidEq(Arg(c, 1), kIID_IDirectInputA)) return QueryInterfaceFor(c, kIID_IDirectInputA);
+  return QueryInterfaceFor(c, kIID_IDirectInput2A);
+}
+
 HLE_NAMED("dinput8.dll", "IDirectInput8A::AddRef", DI8_AddRef, 1) { return com::AddRef(Arg(c, 0)); }
 HLE_NAMED("dinput8.dll", "IDirectInput8A::Release", DI8_Release, 1) { return com::Release(Arg(c, 0)); }
 
@@ -264,9 +337,11 @@ HLE_NAMED("dinput8.dll", "IDirectInput8A::CreateDevice", DI8_CreateDevice, 4) {
     Wr32(out, 0);
     return DIERR_DEVICENOTREG;
   }
+  Direct8* di = com::As<Direct8>(Arg(c, 0));
   auto d = std::make_shared<InputDevice>();
   d->keyboard = keyboard;
-  Wr32(out, com::Publish(d, DeviceVtable()));
+  d->version = di ? di->version : 0x800;
+  Wr32(out, com::Publish(d, DeviceVtable(d->version)));
   SetRawInputSink(&OnRawInput);
   return DI_OK;
 }
@@ -300,6 +375,29 @@ HLE_NAMED("dinput8.dll", "IDirectInput8A::EnumDevices", DI8_EnumDevices, 5) {
   return DI_OK;
 }
 
+// IDirectInputA::EnumDevices(dwDevType, lpCallback, pvRef, dwFlags) with
+// the older device types: the keyboard and the mouse. No joysticks (the
+// devices cannot be created yet).
+HLE_NAMED("dinput.dll", "IDirectInput2A::EnumDevices", DI2_EnumDevices, 5) {
+  Direct8* self = com::As<Direct8>(Arg(c, 0));
+  uint32_t version = self ? self->version : 0x500;
+  uint32_t type = Arg(c, 1) & 0xFF, cb = Arg(c, 2), ref = Arg(c, 3);
+  if (type > DIDEVTYPE_JOYSTICK) return DIERR_INVALIDPARAM;
+  bool mouse = type == 0 || type == DIDEVTYPE_MOUSE;
+  bool keyboard = type == 0 || type == DIDEVTYPE_KEYBOARD;
+  uint32_t size = version >= 0x500 ? sizeof(DIDEVICEINSTANCEA) : kDIDEVICEINSTANCEA_DX3;
+  uint32_t inst = HeapAllocProcess(sizeof(DIDEVICEINSTANCEA), true);
+  auto* di = reinterpret_cast<DIDEVICEINSTANCEA*>(GPtr(inst));
+  bool more = true;
+  for (bool kb : {true, false}) {
+    if (!more || (kb ? !keyboard : !mouse)) continue;
+    FillInstance(di, kb, version, size);
+    more = CallGuest(c, cb, {inst, ref});  // 0 = DIENUM_STOP
+  }
+  HeapFreeProcess(inst);
+  return DI_OK;
+}
+
 HLE_NAMED("dinput8.dll", "IDirectInput8A::GetDeviceStatus", DI8_GetDeviceStatus, 2) {
   return com::GuidEq(Arg(c, 1), kGUID_SysKeyboard) || com::GuidEq(Arg(c, 1), kGUID_SysMouse)
              ? DI_OK
@@ -311,26 +409,43 @@ HLE_NAMED("dinput8.dll", "IDirectInput8A::GetDeviceStatus", DI8_GetDeviceStatus,
 HLE_NAMED("dinput8.dll", "IDirectInputDevice8A::QueryInterface", DID8_QueryInterface, 3) {
   return QueryInterfaceFor(c, kIID_IDirectInputDevice8A);
 }
+// IDirectInputDeviceA and IDirectInputDevice2A are the same object.
+HLE_NAMED("dinput.dll", "IDirectInputDevice2A::QueryInterface", DID2_QueryInterface, 3) {
+  if (com::GuidEq(Arg(c, 1), kIID_IDirectInputDeviceA))
+    return QueryInterfaceFor(c, kIID_IDirectInputDeviceA);
+  return QueryInterfaceFor(c, kIID_IDirectInputDevice2A);
+}
+
 HLE_NAMED("dinput8.dll", "IDirectInputDevice8A::AddRef", DID8_AddRef, 1) { return com::AddRef(Arg(c, 0)); }
 HLE_NAMED("dinput8.dll", "IDirectInputDevice8A::Release", DID8_Release, 1) { return com::Release(Arg(c, 0)); }
 
 HLE_NAMED("dinput8.dll", "IDirectInputDevice8A::GetCapabilities", DID8_GetCapabilities, 2) {
   InputDevice* d = Dev(c);
-  DIDEVCAPS* caps = reinterpret_cast<DIDEVCAPS*>(GPtr(Arg(c, 1)));
-  if (caps->dwSize != sizeof(DIDEVCAPS)) return DIERR_INVALIDPARAM;
-  std::memset(reinterpret_cast<uint8_t*>(caps) + 4, 0, sizeof *caps - 4);
-  caps->dwFlags = DIDC_ATTACHED;
-  caps->dwDevType = d->keyboard ? kKeyboardType : kMouseType;
-  caps->dwAxes = d->keyboard ? 0 : 3;
-  caps->dwButtons = d->keyboard ? 128 : 5;
+  uint32_t size = Rd32(Arg(c, 1));
+  // DirectX 3 callers pass the DIDEVCAPS without the force feedback fields.
+  bool ok = size == sizeof(DIDEVCAPS) || (d->version < 0x800 && size == kDIDEVCAPS_DX3);
+  if (!ok) return DIERR_INVALIDPARAM;
+  DIDEVCAPS caps{};
+  caps.dwSize = size;
+  caps.dwFlags = DIDC_ATTACHED;
+  if (d->version >= 0x800)
+    caps.dwDevType = d->keyboard ? kKeyboardType : kMouseType;
+  else
+    caps.dwDevType = d->keyboard ? kLegacyKeyboardType : kLegacyMouseType;
+  caps.dwAxes = d->keyboard ? 0 : 3;
+  caps.dwButtons = d->keyboard ? 128 : 5;
+  std::memcpy(GPtr(Arg(c, 1)), &caps, size);
   return DI_OK;
 }
 
 HLE_NAMED("dinput8.dll", "IDirectInputDevice8A::GetDeviceInfo", DID8_GetDeviceInfo, 2) {
   InputDevice* d = Dev(c);
   DIDEVICEINSTANCEA* di = reinterpret_cast<DIDEVICEINSTANCEA*>(GPtr(Arg(c, 1)));
-  if (di->dwSize != sizeof(DIDEVICEINSTANCEA)) return DIERR_INVALIDPARAM;
-  FillInstance(di, d->keyboard);
+  uint32_t size = di->dwSize;
+  bool ok = size == sizeof(DIDEVICEINSTANCEA) ||
+            (d->version < 0x800 && size == kDIDEVICEINSTANCEA_DX3);
+  if (!ok) return DIERR_INVALIDPARAM;
+  FillInstance(di, d->keyboard, d->version, size);
   return DI_OK;
 }
 
@@ -465,6 +580,43 @@ HLE_NAMED("dinput8.dll", "IDirectInputDevice8A::GetDeviceData", DID8_GetDeviceDa
   if (!(flags & DIGDD_PEEK)) d->overflow = false;
   return overflow ? DI_BUFFEROVERFLOW : DI_OK;
 }
+
+// ---- older interfaces: DirectInput 8 handlers under their names -------------------
+
+struct Alias {
+  const char* method;
+  int nargs;
+  Fn fn;
+};
+
+bool RegisterAliases(const char* iface, std::initializer_list<Alias> methods) {
+  for (const Alias& a : methods)
+    Registrar("dinput.dll", (std::string(iface) + "::" + a.method).c_str(), a.nargs, a.fn);
+  return true;
+}
+
+[[maybe_unused]] const bool g_di2_aliases = RegisterAliases(
+    "IDirectInput2A",
+    {{"AddRef", 1, &hle_DI8_AddRef},
+     {"Release", 1, &hle_DI8_Release},
+     {"CreateDevice", 4, &hle_DI8_CreateDevice},
+     {"GetDeviceStatus", 2, &hle_DI8_GetDeviceStatus}});
+
+[[maybe_unused]] const bool g_did2_aliases = RegisterAliases(
+    "IDirectInputDevice2A",
+    {{"AddRef", 1, &hle_DID8_AddRef},
+     {"Release", 1, &hle_DID8_Release},
+     {"GetCapabilities", 2, &hle_DID8_GetCapabilities},
+     {"GetProperty", 3, &hle_DID8_GetProperty},
+     {"SetProperty", 3, &hle_DID8_SetProperty},
+     {"Acquire", 1, &hle_DID8_Acquire},
+     {"Unacquire", 1, &hle_DID8_Unacquire},
+     {"GetDeviceState", 3, &hle_DID8_GetDeviceState},
+     {"GetDeviceData", 5, &hle_DID8_GetDeviceData},
+     {"SetDataFormat", 2, &hle_DID8_SetDataFormat},
+     {"SetCooperativeLevel", 3, &hle_DID8_SetCooperativeLevel},
+     {"GetDeviceInfo", 2, &hle_DID8_GetDeviceInfo},
+     {"Poll", 1, &hle_DID8_Poll}});
 
 }  // namespace
 }  // namespace recomp::hle
