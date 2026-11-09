@@ -16,6 +16,10 @@
 //     A stream socket to the front end. The runtime writes lines:
 //       "shown"                once the game's window shows its frames
 //       "window x y w h fs"    the window's placement, just before exit
+//       "closed"               just before "exit" when the user closed
+//                              the game's window (close button, Cmd+Q):
+//                              the front end quits too, the two are one
+//                              program to the user
 //       "exit"                 then waits (up to 2 s) for the byte 'x':
 //                              the front end has its own window up again,
 //                              so the desktop never shows in between
@@ -51,6 +55,9 @@ void HostLinkSend(const std::string& line);
 // just before the process exits (sends placement and "exit", waits).
 bool HostLinkFrame(bool window_visible);
 void HostLinkExit();
+// The user asked to close the game's window (SDL quit / close request):
+// HostLinkExit sends "closed" first.
+void HostLinkNoteUserClose();
 // The game window's placement now (points, as HostWindowPlacement): the
 // last one noted goes to the front end at exit.
 void HostLinkNotePlacement(int x, int y, int w, int h, bool fullscreen);

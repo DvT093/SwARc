@@ -439,12 +439,14 @@ void ActivateApp(uint32_t hwnd, bool active) {
 void HandleSdlEvent(const SDL_Event& e) {
   switch (e.type) {
     case SDL_EVENT_QUIT: {
+      HostLinkNoteUserClose();  // the front end quits too (host_link.h)
       std::lock_guard<std::recursive_mutex> l(g_mu);
       for (auto& [h, w] : g_windows)
         if (w.sdl && !w.destroyed) Post(h, WM_CLOSE, 0, 0);
       break;
     }
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+      HostLinkNoteUserClose();
       if (uint32_t h = HwndForSdl(e.window.windowID)) Post(h, WM_CLOSE, 0, 0);
       break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -904,6 +906,7 @@ void InjectTestFocus() {
 //   <t> key <SDL scancode name> [seconds]   e.g. Escape, Return, Space, A,
 //                         Left_GUI ('_' for a space); held for that long
 //                         (default 0.08)
+//   <t> close             the user clicks the window's close button
 //   <t> resize <w> <h>    the user resizes the host window to w x h
 //                         points (logged with the next presentation)
 // '#' starts a comment.
@@ -995,6 +998,10 @@ void InjectTestInput() {
         e.type = SDL_EVENT_KEY_UP;
         e.key.down = false;
         q.push_back({t + (n >= 4 ? std::atof(b) : 0.08), e});
+      } else if (c == "close") {
+        SDL_Event e{};
+        e.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+        q.push_back({t, e});
       } else if (c == "resize" && n == 4) {
         SDL_Event e{};
         e.type = SDL_EVENT_USER;
@@ -1043,6 +1050,8 @@ void InjectTestInput() {
       e.motion.windowID = id;
     } else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP) {
       e.key.windowID = id;
+    } else if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+      e.window.windowID = id;
     } else {
       e.button.windowID = id;
     }
