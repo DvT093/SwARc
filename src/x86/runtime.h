@@ -47,6 +47,11 @@ struct GameConfig {
   // label for the game's own rendering or for the enhanced one.
   int gfx_key_all = 0, gfx_key_aa = 0, gfx_key_filter = 0;
   std::string gfx_label_original = "Original", gfx_label_enhanced = "Enhanced";
+  // Directory of a texture pack (empty: none; <ID>_TEX_PACK overrides):
+  // replacements for the game's textures, recognised by their pixels,
+  // drawn while gfx.replace_textures is on and switched with the others
+  // by gfx_key_all. The platform's graphics API documents the file names.
+  std::string texture_pack;
 };
 
 // Dev/test switch `name` from the environment: getenv("<ID>_<name>"),

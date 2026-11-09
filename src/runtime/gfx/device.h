@@ -158,6 +158,9 @@ struct Enhancements {
   // Anisotropic filtering (1 = off, up to 16) on every linearly
   // minified texture.
   int anisotropy = 1;
+  // Draw with the replacement textures the host gave
+  // (Device::SetTextureReplacement) instead of the game's own.
+  bool replace_textures = false;
 };
 
 class Device {
@@ -176,6 +179,14 @@ class Device {
   virtual void SetOverlay(const uint32_t* argb, int w, int h, int x, int y) {
     (void)argb, (void)w, (void)h, (void)x, (void)y;
   }
+
+  // Texture replacement: while Enhancements::replace_textures is on, a
+  // draw that binds `t` samples `hd` instead (any size: texture
+  // coordinates are normalised; its mip levels are sampled, linearly
+  // between levels, wherever `t` is minified linearly, since a larger
+  // replacement would shimmer without them). `hd` 0 removes it; destroying
+  // either texture removes it too. Backends without it draw `t`.
+  virtual void SetTextureReplacement(TextureId t, TextureId hd) { (void)t, (void)hd; }
 
   // (Re)creates the swap chain: a w x h back buffer presented to the
   // window. Called on SetDisplayMode / device creation.

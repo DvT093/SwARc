@@ -567,6 +567,18 @@ class GpuDevice final : public Device {
     textures_.erase(it);
     for (TextureId& s : stage_tex_)
       if (s == id) s = 0;
+    replacements_.erase(id);
+    for (auto r = replacements_.begin(); r != replacements_.end();)
+      r = r->second == id ? replacements_.erase(r) : std::next(r);
+    fs_dirty_ = true;
+  }
+
+  void SetTextureReplacement(TextureId t, TextureId hd) override {
+    std::lock_guard<std::recursive_mutex> l(mu_);
+    if (hd && textures_.count(t) && textures_.count(hd))
+      replacements_[t] = hd;
+    else
+      replacements_.erase(t);
     fs_dirty_ = true;
   }
 
@@ -2489,12 +2501,23 @@ void r_color0(inout vec4 c) {
   void BindStageTextures(Cmd& c) {
     for (int s = 0; s < 8; s++) {
       auto it = textures_.find(stage_tex_[s]);
+      // Enhancements::replace_textures: the host's texture in its place.
+      bool replaced = false;
+      if (enh_.replace_textures && it != textures_.end())
+        if (auto r = replacements_.find(stage_tex_[s]); r != replacements_.end()) {
+          auto hd = textures_.find(r->second);
+          if (hd != textures_.end()) it = hd, replaced = true;
+        }
       c.tex[s] = it != textures_.end() ? it->second.tex : nullptr;
       SamplerKey k = StageSampler(s);
-      // Enhancements: trilinear on the device's own mip chains, and
-      // anisotropic filtering, where the game minifies linearly.
+      // Enhancements: trilinear on the device's own mip chains (and on a
+      // replacement's), and anisotropic filtering, where the game
+      // minifies linearly.
       if (k.min == SDL_GPU_FILTER_LINEAR) {
-        if (enh_.mipmaps && it != textures_.end() && it->second.auto_mip && k.mip == 0xFF) {
+        const bool own_mips = it != textures_.end() &&
+                              ((enh_.mipmaps && it->second.auto_mip) ||
+                               (replaced && it->second.levels > 1));
+        if (own_mips && k.mip == 0xFF) {
           k.mip = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
           k.min_lod = 0;
         }
@@ -2853,6 +2876,8 @@ void r_color0(inout vec4 c) {
   std::array<uint32_t, 256> rs_{};
   std::array<std::array<uint32_t, 33>, 8> tss_{};
   std::array<TextureId, 8> stage_tex_{};
+  // SetTextureReplacement: game texture -> the host's.
+  std::unordered_map<TextureId, TextureId> replacements_;
   std::array<Mat, 4> world_;
   Mat view_, proj_;
   std::array<Mat, 8> tex_;

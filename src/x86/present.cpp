@@ -35,6 +35,7 @@ const gfx::Enhancements& EnhancedProfile() {
     if (const char* v = Env("A2C")) p.alpha_to_coverage = std::atoi(v) != 0;
     if (const char* v = Env("MIPMAPS")) p.mipmaps = std::atoi(v) != 0;
     if (const char* v = Env("ANISOTROPY")) p.anisotropy = std::atoi(v);
+    if (const char* v = Env("TEX_REPLACE")) p.replace_textures = std::atoi(v) != 0;
     p.msaa = std::clamp(p.msaa, 1, 8);
     p.anisotropy = std::clamp(p.anisotropy, 1, 16);
     p.build_mips = p.mipmaps;
@@ -48,9 +49,9 @@ bool StartEnhanced() {
   return v ? std::atoi(v) != 0 : g_proc->game.gfx_enhanced;
 }
 
-// Which parts are on (switched by GfxKey), and whether the device has
-// not seen the change yet.
-std::atomic<bool> g_aa_on{true}, g_filter_on{true}, g_gfx_changed{false};
+// Which parts are on (switched by GfxKey; the replacement textures only
+// with all of it), and whether the device has not seen the change yet.
+std::atomic<bool> g_aa_on{true}, g_filter_on{true}, g_tex_on{true}, g_gfx_changed{false};
 std::once_flag g_gfx_once;
 
 void InitGfxState() {
@@ -58,6 +59,7 @@ void InitGfxState() {
     bool on = StartEnhanced();
     g_aa_on = on;
     g_filter_on = on;
+    g_tex_on = on;
   });
 }
 
@@ -72,6 +74,7 @@ gfx::Enhancements CurrentEnhancements() {
     e.mipmaps = false;
     e.anisotropy = 1;
   }
+  if (!g_tex_on) e.replace_textures = false;
   return e;
 }
 
@@ -152,8 +155,10 @@ std::vector<uint32_t> RenderText(const std::string& text, int scale, int* w, int
 std::string Describe(gfx::Enhancements e, const gfx::Device& dev) {
   const GameConfig& g = g_proc->game;
   if (e.msaa > 1) e.msaa = dev.MsaaSamples();
-  if (e.msaa <= 1 && !e.mipmaps && e.anisotropy <= 1) return g.gfx_label_original;
+  const bool pack = e.replace_textures && (Env("TEX_PACK") || !g.texture_pack.empty());
+  if (e.msaa <= 1 && !e.mipmaps && e.anisotropy <= 1 && !pack) return g.gfx_label_original;
   std::string s = g.gfx_label_enhanced;
+  if (pack) s += "  HD";
   if (e.msaa > 1) s += "  MSAA " + std::to_string(e.msaa) + "X";
   if (e.anisotropy > 1) s += "  AF " + std::to_string(e.anisotropy) + "X";
   else if (e.mipmaps) s += "  MIPMAPS";
@@ -210,9 +215,10 @@ std::atomic<uint64_t> g_presented{0};
 void SwitchGfx(GfxPart part) {
   InitGfxState();
   if (part == GfxPart::All) {
-    bool on = !(g_aa_on && g_filter_on);
+    bool on = !(g_aa_on && g_filter_on && g_tex_on);
     g_aa_on = on;
     g_filter_on = on;
+    g_tex_on = on;
   } else if (part == GfxPart::AntiAliasing) {
     g_aa_on = !g_aa_on;
   } else {
@@ -225,7 +231,7 @@ bool GfxOn(GfxPart part) {
   InitGfxState();
   if (part == GfxPart::AntiAliasing) return g_aa_on;
   if (part == GfxPart::Filtering) return g_filter_on;
-  return g_aa_on && g_filter_on;
+  return g_aa_on && g_filter_on && g_tex_on;
 }
 
 void SetHostOverlay(const uint32_t* argb, int w, int h, int x, int y) {
