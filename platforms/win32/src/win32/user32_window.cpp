@@ -465,7 +465,10 @@ void HandleSdlEvent(const SDL_Event& e) {
       if (hle::GfxKey(int(e.key.scancode), e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat))
         break;
       uint32_t h = HwndForSdl(e.key.windowID);
-      uint8_t vk = VkFromScancode(e.key.scancode);
+      SDL_Scancode scancode = e.key.scancode;
+      for (const auto& a : Game().key_aliases)
+        if (a.from == int(e.key.scancode)) scancode = SDL_Scancode(a.to);
+      uint8_t vk = VkFromScancode(scancode);
       if (!h || !vk) break;
       bool down = e.type == SDL_EVENT_KEY_DOWN;
       bool was_down = g_key_down[GenericVk(vk)];
@@ -898,8 +901,9 @@ void InjectTestFocus() {
 //                         (the game's cursor should follow it exactly),
 //                         independent of how the frame is shown
 //   <t> click [left|right]
-//   <t> key <SDL scancode name> [seconds]   e.g. Escape, Return, Space, A;
-//                         held for that long (default 0.08)
+//   <t> key <SDL scancode name> [seconds]   e.g. Escape, Return, Space, A,
+//                         Left_GUI ('_' for a space); held for that long
+//                         (default 0.08)
 //   <t> resize <w> <h>    the user resizes the host window to w x h
 //                         points (logged with the next presentation)
 // '#' starts a comment.
@@ -974,6 +978,9 @@ void InjectTestInput() {
         e.button.down = false;
         q.push_back({t + 0.08, e});
       } else if (c == "key" && n >= 3) {
+        // '_' for a space in SDL's key names: "Left_GUI".
+        for (char* p = a; *p; p++)
+          if (*p == '_') *p = ' ';
         SDL_Scancode sc = SDL_GetScancodeFromName(a);
         if (sc == SDL_SCANCODE_UNKNOWN) {
           WarnF("TEST_INPUT: unknown key %s\n", a);
