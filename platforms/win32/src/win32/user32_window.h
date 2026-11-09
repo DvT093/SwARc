@@ -29,6 +29,10 @@ void EnsureSdlVideo();
 // called from PeekMessage/GetMessage and long waits.
 void PumpHostEvents();
 
+// The placement of the game's (first visible) top-level window: SDL
+// points, global coordinates. False if there is none. Main thread only.
+bool HostWindowPlacement(int* x, int* y, int* w, int* h, bool* fullscreen);
+
 // Games that link SDL2 themselves (recomp_sdl2): an SDL2 window is an
 // HWND too, so Win32 and DXGI calls on the HWND the game gets from
 // SDL_GetWindowWMInfo reach its SDL window. size is the client area in

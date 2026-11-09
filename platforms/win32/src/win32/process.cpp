@@ -9,6 +9,7 @@
 
 #include "runtime/log.h"
 #include "win32/hle.h"
+#include "win32/host_link.h"
 #include "win32/kernel32_state.h"
 #include "win32/user32_window.h"
 
@@ -207,7 +208,9 @@ int RunProcess(const win32::GameConfig& game, const std::string& exe_path,
   InitKernel32State();
 
   Thread* main = CreateGuestThread(w.img.stack_reserve);
-  return int(RunMainThread(main, [&](Ctx& c) { return CallGuest(c, w.img.entry, {}); }));
+  int rc = int(RunMainThread(main, [&](Ctx& c) { return CallGuest(c, w.img.entry, {}); }));
+  HostLinkExit();
+  return rc;
 }
 
 }  // namespace recomp

@@ -17,6 +17,7 @@
 
 #include "runtime/log.h"
 #include "win32/hle.h"
+#include "win32/host_link.h"
 #include "win32/kernel32_state.h"
 #include "win32/win32.h"
 
@@ -392,12 +393,14 @@ HLE64("kernel32.dll", ExitProcess, 1) {
   std::fflush(stdout);
   std::fprintf(stderr, "ExitProcess(%u)\n", code);
   std::fflush(stderr);
+  HostLinkExit();
   std::_Exit(int(code));
 }
 
 HLE64("kernel32.dll", TerminateProcess, 2) {
   if (uint32_t(Arg(c, 0)) == 0xFFFFFFFF) {
     std::fprintf(stderr, "TerminateProcess(self, %u)\n", uint32_t(Arg(c, 1)));
+    HostLinkExit();
     std::_Exit(int(Arg(c, 1)));
   }
   return 0;

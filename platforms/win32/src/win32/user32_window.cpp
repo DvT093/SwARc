@@ -24,9 +24,15 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
+
 #include "runtime/display.h"
 #include "runtime/log.h"
 #include "win32/hle.h"
+#include "win32/host_link.h"
 #include "win32/input_state.h"
 #include "win32/kernel32_state.h"
 #include "win32/user32_window.h"
@@ -88,6 +94,9 @@ struct Window {
   // Host fullscreen (UpdateFullscreen), entered for a screen of fs_w x fs_h.
   bool fullscreen = false;
   int fs_w = 0, fs_h = 0;
+  // Placed by the front end (HandedPlacement): its size and fullscreen
+  // state no longer follow the game's.
+  bool placed = false;
   SDL_Window* sdl = nullptr;
   // Built-in controls (see "built-in control classes"): the text is
   // `title`; selection, font, image and check state are kept here.
@@ -711,7 +720,10 @@ void UpdateFullscreen(uint32_t hwnd) {
     std::lock_guard<std::recursive_mutex> l(g_mu);
     Window* w = Win(hwnd);
     if (!w || !w->sdl) return;
-    want = FullscreenPolicy() != F::Window && CoversScreen(*w);
+    if (w->placed)
+      want = HandedPlacement()->fullscreen && w->visible && !w->destroyed;
+    else
+      want = FullscreenPolicy() != F::Window && CoversScreen(*w);
     ScreenFor(*w, &sw, &sh);
     if (want == w->fullscreen && (!want || (w->fs_w == sw && w->fs_h == sh))) return;
     w->fullscreen = want;
@@ -731,7 +743,7 @@ void UpdateFullscreen(uint32_t hwnd) {
     bool exclusive = false;
     const SDL_DisplayID display = SDL_GetDisplayForWindow(sdl);
     const SDL_DisplayMode* d = SDL_GetDesktopDisplayMode(display);
-    if (FullscreenPolicy() == F::Exclusive && d && d->w > 0 && d->h > 0) {
+    if (FullscreenPolicy() == F::Exclusive && !HandedPlacement() && d && d->w > 0 && d->h > 0) {
       int tw = sw, th = sh;
       if (int64_t(sw) * d->h < int64_t(sh) * d->w)
         tw = int((int64_t(sh) * d->w + d->h - 1) / d->h);
@@ -760,7 +772,12 @@ void UpdateFullscreen(uint32_t hwnd) {
       std::fprintf(stderr, "user32: window %X fullscreen for a %dx%d screen\n", hwnd, sw, sh);
   } else {
     SDL_SetWindowFullscreen(sdl, false);
-    SDL_SetWindowSize(sdl, ToPoints(sdl, cw), ToPoints(sdl, ch));
+    if (const HostPlacement* p = HandedPlacement(); p && !p->fullscreen) {
+      SDL_SetWindowSize(sdl, p->w, p->h);
+      SDL_SetWindowPosition(sdl, p->x, p->y);
+    } else if (!HandedPlacement()) {
+      SDL_SetWindowSize(sdl, ToPoints(sdl, cw), ToPoints(sdl, ch));
+    }
   }
 }
 
@@ -785,8 +802,26 @@ void EnsureSdlVideo() {
   // Leave SIGINT/SIGTERM alone: SDL would turn them into quit events the
   // game may ignore, making the process hard to stop.
   SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+  // A window handed over by a front end (host_link.h) goes fullscreen in
+  // place, as the front end's own, without a Space and its animation.
+  if (HandedPlacement()) SDL_SetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, "0");
+  // Run by a front end: no Dock icon of our own, no activation dance.
+  if (HostLinked()) SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
   if (!SDL_Init(SDL_INIT_VIDEO)) FatalF("SDL_Init: %s", SDL_GetError());
   g_sdl_up = true;
+#if defined(__APPLE__)
+  if (HostLinked()) {
+    // SDL leaves a background app without any activation policy, which
+    // keeps its windows from taking keyboard focus: an accessory app has
+    // windows and focus, but no Dock icon or menu bar.
+    using Send = void* (*)(void*, SEL);
+    void* app = reinterpret_cast<Send>(objc_msgSend)(
+        reinterpret_cast<void*>(objc_getClass("NSApplication")), sel_registerName("sharedApplication"));
+    if (app)
+      reinterpret_cast<void (*)(void*, SEL, long)>(objc_msgSend)(
+          app, sel_registerName("setActivationPolicy:"), 1L);  // Accessory
+  }
+#endif
   if (const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) {
     // Games see pixels: a scaled desktop (Wayland, macOS) reports points.
     const float d = m->pixel_density > 0 ? m->pixel_density : 1.0f;
@@ -1100,6 +1135,43 @@ void PumpHostEvents() {
   InjectTestFocus();
   InjectTestInput();
   WatchdogHeartbeat();
+  if (HostLinked()) {
+    // The placement as it is now: the game may destroy its window before
+    // it exits, and the front end wants it back where it last was.
+    int x, y, w, h;
+    bool fs;
+    const bool visible = HostWindowPlacement(&x, &y, &w, &h, &fs);
+    if (visible) HostLinkNotePlacement(x, y, w, h, fs);
+    if (HostLinkFrame(visible)) {
+      SDL_Window* sdl = nullptr;
+      {
+        std::lock_guard<std::recursive_mutex> l(g_mu);
+        for (auto& [hw, win] : g_windows)
+          if (win.sdl && win.visible && !win.destroyed && !(win.style & WS_CHILD)) {
+            sdl = win.sdl;
+            break;
+          }
+      }
+      if (sdl && !Background()) SDL_RaiseWindow(sdl);
+    }
+  }
+}
+
+bool HostWindowPlacement(int* x, int* y, int* w, int* h, bool* fullscreen) {
+  SDL_Window* sdl = nullptr;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    for (auto& [hw, win] : g_windows)
+      if (win.sdl && win.visible && !win.destroyed && !(win.style & WS_CHILD)) {
+        sdl = win.sdl;
+        break;
+      }
+  }
+  if (!sdl || !OnMainThread()) return false;
+  SDL_GetWindowPosition(sdl, x, y);
+  SDL_GetWindowSize(sdl, w, h);
+  *fullscreen = (SDL_GetWindowFlags(sdl) & SDL_WINDOW_FULLSCREEN) != 0;
+  return true;
 }
 
 uint32_t DcForWindow(uint32_t hwnd) { return hwnd ? 0x40000000u | hwnd : 0x00D00001u; }
@@ -1120,7 +1192,7 @@ void SetExclusiveMode(uint32_t hwnd, int w, int h) {
     if (!win) return;
     win->mode_w = w;
     win->mode_h = h;
-    sdl = win->fullscreen ? nullptr : win->sdl;
+    sdl = win->fullscreen || win->placed ? nullptr : win->sdl;
   }
   if (sdl && w) SDL_SetWindowSize(sdl, ToPoints(sdl, w), ToPoints(sdl, h));
   UpdateFullscreen(hwnd);
@@ -1286,6 +1358,13 @@ HLE("user32.dll", CreateWindowExA, 12) {
                                SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE |
                                    SDL_WINDOW_HIGH_PIXEL_DENSITY | GfxWindowFlags());
     if (!win.sdl) FatalF("SDL_CreateWindow: %s", SDL_GetError());
+    if (const HostPlacement* p = HandedPlacement()) {
+      SDL_SetWindowPosition(win.sdl, p->x, p->y);
+      if (!p->fullscreen) SDL_SetWindowSize(win.sdl, p->w, p->h);
+      win.placed = true;
+      std::fprintf(stderr, "user32: window placed by the front end at %d,%d %dx%d%s\n", p->x, p->y,
+                   p->w, p->h, p->fullscreen ? " fullscreen" : "");
+    }
   }
   uint32_t hwnd = win.hwnd;
   {

@@ -35,6 +35,7 @@ add_library(recomp_win32 SHARED
   src/win32/advapi32.cpp
   src/win32/user32_input.cpp
   src/win32/user32_window.cpp
+  src/win32/host_link.cpp
   src/win32/gdi32.cpp
   src/win32/shell_net.cpp
   src/win32/ws2_32.cpp
@@ -46,6 +47,10 @@ target_link_libraries(recomp_win32 PUBLIC recomp_x86 recomp_pe SDL3::SDL3
 # from dropping them where it links --as-needed (ld64 keeps every dylib).
 if(NOT APPLE)
   target_link_options(recomp_win32 INTERFACE "LINKER:--no-as-needed")
+endif()
+if(APPLE)
+  # user32: the activation policy of a game run by a front end (host_link.h).
+  target_link_libraries(recomp_win32 PRIVATE objc)
 endif()
 
 if(FFMPEG_FOUND)
