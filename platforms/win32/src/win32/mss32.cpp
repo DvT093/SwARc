@@ -1898,6 +1898,120 @@ HLE_NAMED("mss32.dll", "_AIL_WAV_info@8", AIL_WAV_info, 2) {
   return 1;
 }
 
+// ---- Miles 6.x calls used by Europe Racer ------------------------------------------
+
+// AIL_set_named_sample_file(S, file_type_suffix, file_image, file_size, block):
+// like set_sample_file, but the image may be compressed; the suffix
+// (".wav", ".mp3") or the data itself says which. Nonzero on success.
+HLE_NAMED("mss32.dll", "_AIL_set_named_sample_file@20", AIL_set_named_sample_file, 5) {
+  const uint32_t h = Arg(c, 0), image = Arg(c, 2), size = Arg(c, 3);
+  if (!image || !size || !EnsureReadable(c, image, size)) {
+    WarnF("mss32: AIL_set_named_sample_file: unreadable image %08X (%u bytes)\n", image, size);
+    return 0;
+  }
+  auto bytes = std::make_shared<std::vector<uint8_t>>(GPtr(image), GPtr(image) + size);
+  std::string err;
+  auto src = audio::MakeSource(bytes, &err);
+  if (!src) {
+    WarnF("mss32: AIL_set_named_sample_file: %s\n", err.c_str());
+    return 0;
+  }
+  std::lock_guard<std::mutex> l(Mu());
+  Sample* s = FindSample(h, false, "AIL_set_named_sample_file");
+  if (!s) return 0;
+  s->v.state = Voice::State::Idle;
+  s->v.eos = false;
+  s->seq = NextSeq();
+  s->bytes_per_frame = src->bytes_per_frame();
+  s->length = src->Length();
+  s->v.src = std::move(src);
+  s->v.Seek(0);
+  s->v.rate = 0;
+  s->start_pos_set = false;
+  return 1;
+}
+
+// AIL_decompress_ASI(indata, insize, filename_ext, &outdata, &outsize,
+// callback): decodes a compressed image (MP3) to a 16-bit PCM RIFF WAVE in
+// memory from AIL_mem_alloc_lock. Nonzero on success. The progress
+// callback is not called.
+HLE_NAMED("mss32.dll", "_AIL_decompress_ASI@24", AIL_decompress_ASI, 6) {
+  const uint32_t in = Arg(c, 0), insize = Arg(c, 1), outp = Arg(c, 3), outsz = Arg(c, 4);
+  if (!in || !insize || !EnsureReadable(c, in, insize)) return 0;
+  auto bytes = std::make_shared<std::vector<uint8_t>>(GPtr(in), GPtr(in) + insize);
+  std::string err;
+  auto src = audio::MakeSource(bytes, &err);
+  if (!src) {
+    WarnF("mss32: AIL_decompress_ASI: %s\n", err.c_str());
+    return 0;
+  }
+  const int ch = src->channels();
+  std::vector<int16_t> pcm;
+  std::vector<float> buf(4096 * size_t(ch));
+  for (int n; (n = src->Read(buf.data(), 4096)) > 0;)
+    for (int i = 0; i < n * ch; i++)
+      pcm.push_back(int16_t(std::lround(std::clamp(buf[size_t(i)], -1.0f, 1.0f) * 32767.0f)));
+  const uint32_t data_len = uint32_t(pcm.size() * 2), total = 44 + data_len;
+  gaddr out = HeapAllocProcess(total, false);
+  if (!out) return 0;
+  uint8_t* p = GPtr(out);
+  auto w32 = [](uint8_t* d, uint32_t v) { std::memcpy(d, &v, 4); };
+  auto w16 = [](uint8_t* d, uint16_t v) { std::memcpy(d, &v, 2); };
+  std::memcpy(p, "RIFF", 4), w32(p + 4, total - 8), std::memcpy(p + 8, "WAVEfmt ", 8);
+  w32(p + 16, 16), w16(p + 20, 1), w16(p + 22, uint16_t(ch)), w32(p + 24, uint32_t(src->rate()));
+  w32(p + 28, uint32_t(src->rate() * ch * 2)), w16(p + 32, uint16_t(ch * 2)), w16(p + 34, 16);
+  std::memcpy(p + 36, "data", 4), w32(p + 40, data_len);
+  std::memcpy(p + 44, pcm.data(), data_len);
+  if (outp) Wr32(outp, uint32_t(out));
+  if (outsz) Wr32(outsz, total);
+  return 1;
+}
+
+// AIL_mem_alloc_lock(size) / AIL_mem_free_lock(ptr): Miles' own heap.
+HLE_NAMED("mss32.dll", "_AIL_mem_alloc_lock@4", AIL_mem_alloc_lock, 1) {
+  return uint32_t(HeapAllocProcess(Arg(c, 0), false));
+}
+
+HLE_NAMED("mss32.dll", "_AIL_mem_free_lock@4", AIL_mem_free_lock, 1) {
+  if (Arg(c, 0)) HeapFreeProcess(Arg(c, 0));
+  return 0;
+}
+
+// AIL_serve(): background service for drivers without a timer thread;
+// the mixer runs on its own thread here.
+HLE_NAMED("mss32.dll", "_AIL_serve@0", AIL_serve, 0) { return 0; }
+
+// AIL_close_digital_driver(dig).
+HLE_NAMED("mss32.dll", "_AIL_close_digital_driver@4", AIL_close_digital_driver, 1) {
+  std::lock_guard<std::mutex> l(Mu());
+  CloseDriver();
+  return 0;
+}
+
+// AIL_set_sample_pan(S, pan 0..127, 64 = centre).
+HLE_NAMED("mss32.dll", "_AIL_set_sample_pan@8", AIL_set_sample_pan, 2) {
+  std::lock_guard<std::mutex> l(Mu());
+  if (Sample* s = FindSample(Arg(c, 0), false, "AIL_set_sample_pan")) {
+    s->pan = std::clamp<int>(int32_t(Arg(c, 1)), 0, 127) / 127.0f;
+    ApplyVolume(*s);
+  }
+  return 0;
+}
+
+// AIL_set_3D_velocity_vector(obj, dx, dy, dz): Doppler, not modelled.
+HLE_NAMED("mss32.dll", "_AIL_set_3D_velocity_vector@16", AIL_set_3D_velocity_vector, 4) { return 0; }
+
+// AIL_3D_room_type(lib): the provider's environment; none on Fast 2D.
+HLE_NAMED("mss32.dll", "_AIL_3D_room_type@4", AIL_3D_room_type, 1) { return 0; }
+
+// AIL_set_3D_speaker_type(lib, type): the mixer always outputs stereo.
+HLE_NAMED("mss32.dll", "_AIL_set_3D_speaker_type@8", AIL_set_3D_speaker_type, 2) { return 0; }
+
+// AIL_enumerate_filters(&next, &provider, &name) / AIL_open_filter(lib,
+// dig): no filter providers (no .flt files are loaded).
+HLE_NAMED("mss32.dll", "_AIL_enumerate_filters@12", AIL_enumerate_filters, 3) { return 0; }
+HLE_NAMED("mss32.dll", "_AIL_open_filter@8", AIL_open_filter, 2) { return 0; }
+
 }  // namespace
 
 bool MilesDriverOpen() {
