@@ -27,4 +27,19 @@ std::unique_ptr<gfx::Device> CreateGfxDevice(SDL_Window* w);
 // and returns true, the key being the host's; false for the game's keys.
 bool GfxKey(int scancode, bool down);
 
+// The same switches for the host's own controls (a pause menu): switch
+// one part as its key does, and whether it is on now (All: both).
+enum class GfxPart { All, AntiAliasing, Filtering };
+void SwitchGfx(GfxPart part);
+bool GfxOn(GfxPart part);
+
+// An image the host shows over every presented frame until it is replaced
+// or removed (argb null): `w` x `h` A8R8G8B8 pixels at (x, y) in the
+// frame's pixels (the back buffer's size). While it is up, the switches
+// above apply without their own on-screen message.
+void SetHostOverlay(const uint32_t* argb, int w, int h, int x, int y);
+
+// Frames presented so far.
+uint64_t PresentedFrames();
+
 }  // namespace recomp::hle

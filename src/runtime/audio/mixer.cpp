@@ -212,6 +212,14 @@ void Mixer::Close() {
   reverb_.Close();
 }
 
+void Mixer::SetPaused(bool paused) {
+  if (!stream_) return;
+  if (paused)
+    SDL_PauseAudioStreamDevice(stream_);
+  else
+    SDL_ResumeAudioStreamDevice(stream_);
+}
+
 void Mixer::Add(Voice* v) {
   if (std::find(voices_.begin(), voices_.end(), v) == voices_.end())
     voices_.push_back(v);

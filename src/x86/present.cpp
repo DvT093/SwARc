@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "runtime/log.h"
@@ -159,28 +160,90 @@ std::string Describe(gfx::Enhancements e, const gfx::Device& dev) {
   return s;
 }
 
-// Applies a switch made by GfxKey to `dev` and shows it for a moment.
+// SetHostOverlay's image, waiting for the next presented frame.
+struct HostOverlay {
+  std::vector<uint32_t> argb;
+  int w = 0, h = 0, x = 0, y = 0;
+};
+std::mutex g_host_overlay_mu;
+HostOverlay g_host_overlay;
+bool g_host_overlay_on = false, g_host_overlay_changed = false;
+
+// Applies a switch made by GfxKey to `dev` and shows it for a moment
+// (not while the host shows an image of its own: that says it already).
 void UpdateEnhancements(gfx::Device& dev, int w, int h) {
   static Uint64 overlay_until = 0;
+  bool host_on, host_changed;
+  {
+    std::lock_guard<std::mutex> l(g_host_overlay_mu);
+    host_on = g_host_overlay_on;
+    host_changed = std::exchange(g_host_overlay_changed, false);
+    if (host_changed) {
+      const HostOverlay& o = g_host_overlay;
+      dev.SetOverlay(host_on ? o.argb.data() : nullptr, host_on ? o.w : 0, host_on ? o.h : 0, o.x, o.y);
+      overlay_until = 0;
+    }
+  }
   if (g_gfx_changed.exchange(false)) {
     gfx::Enhancements e = CurrentEnhancements();
     dev.SetEnhancements(e);
-    int scale = std::max(2, h / 240), ow, oh;
     const std::string text = Describe(e, dev);
+    WarnF("gfx: %s\n", text.c_str());
+    if (host_on) return;
+    int scale = std::max(2, h / 240), ow, oh;
     std::vector<uint32_t> img = RenderText(text, scale, &ow, &oh);
     ow = std::min(ow, w);
     if (ow > 0) {
       dev.SetOverlay(img.data(), ow, oh, 4 * scale, 4 * scale);
       overlay_until = SDL_GetTicks() + 2500;
     }
-    WarnF("gfx: %s\n", text.c_str());
   } else if (overlay_until && SDL_GetTicks() >= overlay_until) {
     dev.SetOverlay(nullptr, 0, 0, 0, 0);
     overlay_until = 0;
   }
 }
 
+std::atomic<uint64_t> g_presented{0};
+
 }  // namespace
+
+void SwitchGfx(GfxPart part) {
+  InitGfxState();
+  if (part == GfxPart::All) {
+    bool on = !(g_aa_on && g_filter_on);
+    g_aa_on = on;
+    g_filter_on = on;
+  } else if (part == GfxPart::AntiAliasing) {
+    g_aa_on = !g_aa_on;
+  } else {
+    g_filter_on = !g_filter_on;
+  }
+  g_gfx_changed = true;
+}
+
+bool GfxOn(GfxPart part) {
+  InitGfxState();
+  if (part == GfxPart::AntiAliasing) return g_aa_on;
+  if (part == GfxPart::Filtering) return g_filter_on;
+  return g_aa_on && g_filter_on;
+}
+
+void SetHostOverlay(const uint32_t* argb, int w, int h, int x, int y) {
+  std::lock_guard<std::mutex> l(g_host_overlay_mu);
+  g_host_overlay_on = argb && w > 0 && h > 0;
+  g_host_overlay_changed = true;
+  if (g_host_overlay_on) {
+    g_host_overlay.argb.assign(argb, argb + size_t(w) * size_t(h));
+    g_host_overlay.w = w;
+    g_host_overlay.h = h;
+    g_host_overlay.x = x;
+    g_host_overlay.y = y;
+  } else {
+    g_host_overlay = {};
+  }
+}
+
+uint64_t PresentedFrames() { return g_presented.load(); }
 
 bool GfxKey(int scancode, bool down) {
   const GameConfig& g = g_proc->game;
@@ -189,17 +252,7 @@ bool GfxKey(int scancode, bool down) {
              filter = scancode == g.gfx_key_filter;
   if (!all && !aa && !filter) return false;
   if (!down) return true;
-  InitGfxState();
-  if (all) {
-    bool on = !(g_aa_on && g_filter_on);
-    g_aa_on = on;
-    g_filter_on = on;
-  } else if (aa) {
-    g_aa_on = !g_aa_on;
-  } else {
-    g_filter_on = !g_filter_on;
-  }
-  g_gfx_changed = true;
+  SwitchGfx(all ? GfxPart::All : aa ? GfxPart::AntiAliasing : GfxPart::Filtering);
   return true;
 }
 
@@ -243,6 +296,7 @@ void PresentFrame(gfx::Device& dev, int w, int h) {
   if (shot && !front) SaveShot(dev, w, h, frame, false);
   UpdateEnhancements(dev, w, h);
   dev.Present();
+  g_presented++;
   if (shot && front) SaveShot(dev, w, h, frame, true);
   // GameConfig::max_fps / <ID>_MAX_FPS: wait for the next frame's slot.
   static const double max_fps = [] {

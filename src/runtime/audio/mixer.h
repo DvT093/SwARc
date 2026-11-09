@@ -114,6 +114,9 @@ class Mixer {
   // No device: the caller pulls the mix with Mix() (offline rendering).
   void OpenOffline(int rate);
   void Close();
+  // Stops (true) or resumes the output device: every voice holds where it
+  // is and goes on from there, as when the host pauses the whole game.
+  void SetPaused(bool paused);
 
   std::mutex& mu() { return mu_; }
   // Output rate; 0 until opened (no device: never).
