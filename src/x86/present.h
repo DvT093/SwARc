@@ -18,7 +18,13 @@ void PresentFrame(gfx::Device& dev, int w, int h);
 gfx::Backend GfxBackend();
 // SDL_CreateWindow flags the backend needs on top-level windows.
 uint64_t GfxWindowFlags();
-// Creates the device for `w` on GfxBackend(); fatal if that fails.
+// Creates the device for `w` on GfxBackend(); fatal if that fails. It
+// starts with GameConfig's image quality enhancements.
 std::unique_ptr<gfx::Device> CreateGfxDevice(SDL_Window* w);
+
+// A key went down or up (SDL scancode): if it is one of GameConfig's
+// gfx_key_*, switches the enhancements (from the next presented frame)
+// and returns true, the key being the host's; false for the game's keys.
+bool GfxKey(int scancode, bool down);
 
 }  // namespace recomp::hle

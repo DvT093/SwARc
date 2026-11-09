@@ -451,6 +451,10 @@ void HandleSdlEvent(const SDL_Event& e) {
       break;
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
+      // The host's image quality keys (GameConfig::gfx_key_*); repeats
+      // switch nothing.
+      if (hle::GfxKey(int(e.key.scancode), e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat))
+        break;
       uint32_t h = HwndForSdl(e.key.windowID);
       uint8_t vk = VkFromScancode(e.key.scancode);
       if (!h || !vk) break;

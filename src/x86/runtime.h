@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "runtime/gfx/device.h"
 #include "runtime/guest_alloc.h"
 #include "runtime/guest_memory.h"
 #include "x86/ctx.h"
@@ -29,6 +30,23 @@ struct GameConfig {
   // limiter of their own; 0: as fast as they come. <ID>_MAX_FPS
   // overrides it (0 to uncap).
   double max_fps = 0;
+
+  // Image quality the host adds to the game's rendering (gfx::
+  // Enhancements; its build_mips follows mipmaps here). All off: the
+  // game's own. <ID>_MSAA, <ID>_A2C, <ID>_MIPMAPS and <ID>_ANISOTROPY
+  // override the fields.
+  gfx::Enhancements gfx;
+  // Whether a run starts with them (else with the game's own rendering,
+  // the keys below switching them on); <ID>_GFX_ENHANCED=0/1 overrides.
+  bool gfx_enhanced = true;
+  // Keys (SDL scancodes, 0: none) that switch between the game's own
+  // rendering and `gfx` while the game runs, without a restart: all of it,
+  // only the anti-aliasing (msaa, alpha_to_coverage), only the texture
+  // filtering (mipmaps, anisotropy). The game never sees these keys. A
+  // switch shows its result on screen for a moment, starting with the
+  // label for the game's own rendering or for the enhanced one.
+  int gfx_key_all = 0, gfx_key_aa = 0, gfx_key_filter = 0;
+  std::string gfx_label_original = "Original", gfx_label_enhanced = "Enhanced";
 };
 
 // Dev/test switch `name` from the environment: getenv("<ID>_<name>"),
