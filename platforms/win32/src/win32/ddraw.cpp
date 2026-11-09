@@ -64,10 +64,6 @@ constexpr guest::GUID kIID_IDirectDrawSurface2 = {0x57805885, 0x6EEC, 0x11CF, {0
 constexpr guest::GUID kIID_IDirect3D2 = {0x6AAE1EC1, 0x662A, 0x11D0, {0x88, 0x9D, 0x00, 0xAA, 0x00, 0xBB, 0xB7, 0x6A}};
 constexpr guest::GUID kIID_IDirect3DTexture2 = {0x93281502, 0x8CF8, 0x11D0, {0x89, 0xAB, 0x00, 0xA0, 0xC9, 0x05, 0x41, 0x29}};
 
-// GameConfig::video_memory_mb, with 8 MB in use (the primary surface).
-uint32_t VidMemTotal() { return Game().video_memory_mb << 20; }
-uint32_t VidMemFree() { return VidMemTotal() - (8u << 20); }
-
 // DirectDraw/Direct3D 7 entry points run under one process-wide lock,
 // like DirectDraw with DDSCL_MULTITHREADED (which games request): its
 // worker thread uploads textures while the main thread renders, and
@@ -75,6 +71,15 @@ uint32_t VidMemFree() { return VidMemTotal() - (8u << 20); }
 hle::Serialised g_serialised("ddraw.dll");
 
 State g_state;
+
+// GameConfig::video_memory_mb, with 8 MB in use (the primary surface),
+// less the video memory textures made so far.
+uint32_t VidMemTotal() { return Game().video_memory_mb << 20; }
+uint32_t VidMemFree() {
+  uint32_t free = VidMemTotal() - (8u << 20);
+  return g_state.vidmem_used < free ? free - g_state.vidmem_used : 0;
+}
+
 Uint64 g_last_present_ms = 0;  // SDL ticks of the last frame Present
 
 int PrimaryWidth() { return g_state.mode_w ? g_state.mode_w : 1024; }
@@ -211,6 +216,7 @@ Surface::~Surface() {
   State& s = g_state;
   if (s.gfx) {
     if (tex && level == 0) s.gfx->DestroyTexture(tex);
+    s.vidmem_used -= std::min(vidmem, s.vidmem_used);
     if (depth) s.gfx->DestroyDepth(depth);
   }
   if (shadow) {
@@ -464,8 +470,18 @@ uint32_t CreateSurfaceImpl(const DDSURFACEDESC2& d, uint32_t* out, int version) 
       }
     }
     uint32_t tcaps = caps | DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM;
-    if (caps2 & (DDSCAPS2_TEXTUREMANAGE | DDSCAPS2_D3DTEXTUREMANAGE))
-      tcaps &= ~(DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM);
+    bool managed = (caps2 & (DDSCAPS2_TEXTUREMANAGE | DDSCAPS2_D3DTEXTUREMANAGE)) != 0;
+    if (managed) tcaps &= ~(DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM);
+    // A texture asked for in video memory takes room on the card; when it
+    // does not fit, fail like a full card (games probe texture memory so).
+    uint32_t vbytes = 0;
+    if ((caps & DDSCAPS_VIDEOMEMORY) && !managed) {
+      for (int l = 0; l < levels; l++) {
+        uint32_t lw = uint32_t(std::max(1, w >> l)), lh = uint32_t(std::max(1, h >> l));
+        vbytes += gfx::RowPitch(fmt, lw) * gfx::RowCount(fmt, lh);
+      }
+      if (vbytes > VidMemFree()) return DDERR_OUTOFVIDEOMEMORY;
+    }
     // DDSCAPS_3DDEVICE: the game renders into it (shadow textures).
     gfx::TextureId tex =
         Gfx()->CreateTexture(w, h, levels, fmt, (caps & DDSCAPS_3DDEVICE) != 0);
@@ -491,6 +507,8 @@ uint32_t CreateSurfaceImpl(const DDSURFACEDESC2& d, uint32_t* out, int version) 
       if (!top) top = s;
       prev = s;
     }
+    top->vidmem = vbytes;
+    g_state.vidmem_used += vbytes;
     *out = top->guest;
     return DD_OK;
   }

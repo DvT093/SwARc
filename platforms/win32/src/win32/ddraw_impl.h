@@ -92,6 +92,10 @@ struct State {
   std::unique_ptr<gfx::Device> gfx;
   Surface* backbuffer = nullptr;  // first back buffer (render target)
   bool vsync = false;
+  // Bytes of textures created in explicit video memory (not managed):
+  // counted against VidMemFree() so CreateSurface fails when the card is
+  // full, as games that probe texture memory by allocating expect.
+  uint32_t vidmem_used = 0;
 };
 State& St();
 // The gfx device, created on first use for the cooperative window.
@@ -111,6 +115,7 @@ struct Surface : com::Object {
   uint32_t mem = 0;  // guest memory (lock shadow / system memory surface)
   gfx::TextureId tex = 0;  // texture (shared by all mip levels)
   int level = 0;           // mip level of this surface in `tex`
+  uint32_t vidmem = 0;     // bytes counted in State::vidmem_used (top level)
   gfx::DepthId depth = 0;
   std::vector<std::shared_ptr<Surface>> attached;  // chain / mips / z
   Surface* zbuffer = nullptr;   // attached Z buffer (render targets)
