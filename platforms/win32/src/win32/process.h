@@ -52,6 +52,16 @@ struct GameConfig : recomp::GameConfig {
   };
   Fullscreen fullscreen = Fullscreen::Desktop;
 
+  // Host keys the game sees as another key (SDL scancodes), for keys the
+  // host's system keeps for itself in combinations: e.g. a Mac's Command
+  // keys as the PC's Ctrl (macOS switches Spaces on Ctrl+arrow). To 0: the
+  // game never sees the key. Applied to window messages, key state and
+  // DirectInput alike.
+  struct KeyAlias {
+    int from = 0, to = 0;
+  };
+  std::vector<KeyAlias> key_aliases;
+
   // CD-ROM drives the game expects its disc in. Each is a host directory
   // holding the disc's files (an extracted image). GetDriveTypeA reports
   // DRIVE_CDROM for the letter, GetVolumeInformationA the label, and guest
