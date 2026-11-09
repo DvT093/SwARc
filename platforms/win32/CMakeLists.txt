@@ -73,7 +73,8 @@ endif()
 add_library(recomp_d3d7 SHARED
   src/win32/ddraw.cpp
   src/win32/d3d7.cpp
-  src/win32/d3d2.cpp)
+  src/win32/d3d2.cpp
+  src/win32/texture_pack.cpp)
 target_link_libraries(recomp_d3d7 PUBLIC recomp_win32 recomp_gfx)
 
 # XInput 1.3 on SDL gamepads, and the WMI that tells games which

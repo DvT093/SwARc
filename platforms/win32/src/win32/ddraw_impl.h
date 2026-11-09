@@ -13,6 +13,7 @@
 #include "runtime/lazy_mem.h"
 #include "win32/com.h"
 #include "win32/ddraw_types.h"
+#include "win32/texture_pack.h"
 #include "x86/runtime.h"
 
 namespace recomp::ddraw {
@@ -132,6 +133,8 @@ struct Surface : com::Object {
   // changed (games often lock just to wait for the GPU).
   std::unique_ptr<lazy::LazyImage> shadow;
   uint32_t priority = 0, lod = 0;
+  // Its replacement from a texture pack (texture_pack.h), if it has had one.
+  std::unique_ptr<PackState> pack;
   ~Surface() override;
 };
 

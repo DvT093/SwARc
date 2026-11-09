@@ -28,7 +28,8 @@ std::unique_ptr<gfx::Device> CreateGfxDevice(SDL_Window* w);
 bool GfxKey(int scancode, bool down);
 
 // The same switches for the host's own controls (a pause menu): switch
-// one part as its key does, and whether it is on now (All: both).
+// one part as its key does, and whether it is on now (All: everything,
+// the replacement textures included).
 enum class GfxPart { All, AntiAliasing, Filtering };
 void SwitchGfx(GfxPart part);
 bool GfxOn(GfxPart part);

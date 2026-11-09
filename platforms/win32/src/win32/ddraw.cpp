@@ -22,7 +22,8 @@
 //     game's cursor thread draws on between frames.
 //   - Z buffers: gfx depth surfaces, attached to the back buffer.
 //   - Textures (incl. mip chains): a gfx texture plus guest memory for each
-//     level; Lock hands out the guest memory, Unlock uploads it.
+//     level; Lock hands out the guest memory, Unlock uploads it. A
+//     texture pack can replace what the game uploads (texture_pack.h).
 //   - Offscreen plain / system memory: guest memory only; Blt to the back
 //     buffer goes through gfx::Device::Blit.
 // The adapter is reported as a GeForce3 with 64 MB, the best-supported
@@ -233,6 +234,7 @@ void UploadLevel(Surface& s) {
   gfx::Rect r{0, 0, s.width, s.height};
   if (!s.keyed) {
     Gfx()->UpdateTexture(s.tex, s.level, r, GPtr(s.mem), s.pitch);
+    PackUpload(s);
     return;
   }
   // A8R8G8B8 with alpha 0 where the texel is the colour key; other texels
@@ -255,6 +257,7 @@ void UploadLevel(Surface& s) {
     }
   }
   Gfx()->UpdateTexture(s.tex, s.level, r, px.data(), uint32_t(s.width) * 4);
+  PackUpload(s);
 }
 
 void KeyTexture(Surface& top) {
