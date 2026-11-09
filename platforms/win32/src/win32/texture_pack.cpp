@@ -6,11 +6,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -213,19 +218,105 @@ struct Entry {
 };
 std::unordered_map<uint64_t, Entry> g_cache;
 
-// The pack's texture for `hash`, loaded on first use (null if unreadable).
-const Entry* Load(uint64_t hash) {
-  auto it = g_cache.find(hash);
-  if (it == g_cache.end()) {
-    Entry e;
-    const std::string path = PackDir() + "/" + HashName(hash) + ".png";
-    if (LoadPng(path, &e.px, &e.w, &e.h)) {
-      e.tex = Gfx()->CreateTexture(e.w, e.h, Levels(e.w, e.h), gfx::Format::A8R8G8B8, false);
-      if (e.tex) UploadWithMips(e.tex, e.px, e.w, e.h, {0, 0, e.w, e.h});
-    }
-    if (!e.tex) e.px.clear();
-    it = g_cache.emplace(hash, std::move(e)).first;
+// A PNG decoded off the main thread, with its mip chain.
+struct Decoded {
+  bool ok = false;
+  int w = 0, h = 0;
+  std::vector<std::vector<uint32_t>> levels;  // [0] = the top level
+};
+
+Decoded DecodePack(uint64_t hash) {
+  Decoded d;
+  std::vector<uint32_t> top;
+  if (!LoadPng(PackDir() + "/" + HashName(hash) + ".png", &top, &d.w, &d.h)) return d;
+  d.ok = true;
+  d.levels.push_back(std::move(top));
+  for (int l = 1, pw = d.w, ph = d.h; l < Levels(d.w, d.h); l++) {
+    const int lw = std::max(1, d.w >> l), lh = std::max(1, d.h >> l);
+    std::vector<uint32_t> cur(size_t(lw) * size_t(lh));
+    for (int y = 0; y < lh; y++)
+      for (int x = 0; x < lw; x++)
+        cur[size_t(y) * size_t(lw) + size_t(x)] = MipTexel(d.levels.back(), pw, ph, 1, x, y);
+    d.levels.push_back(std::move(cur));
+    pw = lw;
+    ph = lh;
   }
+  return d;
+}
+
+// Decoding: a few worker threads; results wait in g_done for the main
+// thread, which owns the GPU textures.
+std::mutex g_job_mu;
+std::condition_variable g_job_cv;
+std::deque<uint64_t> g_queue;
+std::unordered_set<uint64_t> g_queued;  // queued or decoding
+std::unordered_map<uint64_t, Decoded> g_done;
+std::unordered_set<Surface*> g_waiting;  // surfaces with a pending match
+
+void Worker() {
+  for (;;) {
+    uint64_t hash;
+    {
+      std::unique_lock<std::mutex> l(g_job_mu);
+      g_job_cv.wait(l, [] { return !g_queue.empty(); });
+      hash = g_queue.front();
+      g_queue.pop_front();
+    }
+    Decoded d = DecodePack(hash);
+    std::lock_guard<std::mutex> l(g_job_mu);
+    g_done[hash] = std::move(d);
+    g_queued.erase(hash);
+  }
+}
+
+void Request(uint64_t hash) {
+  static std::once_flag started;
+  std::call_once(started, [] {
+    const unsigned n = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 4u);
+    for (unsigned i = 0; i < n; i++) std::thread(Worker).detach();
+  });
+  std::lock_guard<std::mutex> l(g_job_mu);
+  if (g_done.count(hash) || !g_queued.insert(hash).second) return;
+  g_queue.push_back(hash);
+  g_job_cv.notify_one();
+}
+
+// The pack's texture for `hash` if it is ready (null while it decodes or
+// if it is unreadable); `wait` decodes it here if it is not.
+const Entry* Load(uint64_t hash, bool wait = false) {
+  auto it = g_cache.find(hash);
+  if (it != g_cache.end()) return it->second.tex ? &it->second : nullptr;
+  Decoded d;
+  for (;;) {
+    std::unique_lock<std::mutex> l(g_job_mu);
+    auto done = g_done.find(hash);
+    if (done != g_done.end()) {
+      d = std::move(done->second);
+      g_done.erase(done);
+      break;
+    }
+    if (!wait) return nullptr;
+    const bool queued = g_queued.count(hash) != 0;
+    l.unlock();
+    if (!queued) {
+      d = DecodePack(hash);
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  Entry e;
+  if (d.ok) {
+    e.w = d.w;
+    e.h = d.h;
+    e.tex = Gfx()->CreateTexture(e.w, e.h, int(d.levels.size()), gfx::Format::A8R8G8B8, false);
+    if (e.tex)
+      for (size_t l = 0; l < d.levels.size(); l++) {
+        const int lw = std::max(1, e.w >> l), lh = std::max(1, e.h >> l);
+        Gfx()->UpdateTexture(e.tex, int(l), {0, 0, lw, lh}, d.levels[l].data(), uint32_t(lw) * 4);
+      }
+    if (e.tex) e.px = std::move(d.levels[0]);
+  }
+  it = g_cache.emplace(hash, std::move(e)).first;
   return it->second.tex ? &it->second : nullptr;
 }
 
@@ -302,9 +393,22 @@ void Patch(Surface& s, PackState& st, const Entry& e, const std::vector<uint8_t>
   UploadWithMips(st.own, st.own_px, e.w, e.h, hr);
 }
 
+// The surface's top level `raw` matched `hash`: draw `e` in its place.
+void Use(Surface& s, PackState& st, uint64_t hash, const Entry& e, std::vector<uint8_t> raw) {
+  if (Log()) WarnF("ddraw: texture %dx%d %s replaced (%dx%d)\n", s.width, s.height,
+                   HashName(hash).c_str(), e.w, e.h);
+  DropOwn(st);
+  st.hash = hash;
+  st.hd = e.tex;
+  st.base = raw;
+  st.last = std::move(raw);
+  Bind(s, st);
+}
+
 }  // namespace
 
 PackState::~PackState() {
+  if (owner) g_waiting.erase(owner);
   if (own && St().gfx) St().gfx->DestroyTexture(own);
 }
 
@@ -333,19 +437,32 @@ void PackUpload(Surface& s) {
   if (!s.pack) {
     if (!Available().count(hash)) return;
     s.pack = std::make_unique<PackState>();
+    s.pack->owner = &s;
   }
   PackState& st = *s.pack;
+  if (st.pending) {
+    // Changed while its replacement decodes: finish that first, so the
+    // change is followed as on a bound replacement.
+    const uint64_t p = st.pending;
+    st.pending = 0;
+    g_waiting.erase(&s);
+    if (p != hash)
+      if (const Entry* e = Load(p, true)) Use(s, st, p, *e, st.last);
+  }
 
   if (Available().count(hash) && !(st.hd && st.hash == hash && !st.own)) {
-    if (const Entry* e = Load(hash)) {
-      if (Log()) WarnF("ddraw: texture %dx%d %s replaced (%dx%d)\n", s.width, s.height,
-                       HashName(hash).c_str(), e->w, e->h);
-      DropOwn(st);
-      st.hash = hash;
-      st.hd = e->tex;
-      st.base = raw;
+    Request(hash);
+    const Entry* e = Load(hash);
+    if (!e && !g_cache.count(hash)) {
+      // Still decoding: the game's own texture until PackPoll binds it.
+      if (st.hd) Drop(s, st);
+      st.pending = hash;
+      g_waiting.insert(&s);
       st.last = std::move(raw);
-      Bind(s, st);
+      return;
+    }
+    if (e) {
+      Use(s, st, hash, *e, raw);
       return;
     }
   }
@@ -381,8 +498,25 @@ void PackUpload(Surface& s) {
   if (Log())
     WarnF("ddraw: texture %s changed at %d,%d %dx%d: patched\n", HashName(st.hash).c_str(), r.left,
           r.top, r.right - r.left, r.bottom - r.top);
-  if (const Entry* e = Load(st.hash)) Patch(s, st, *e, raw, r);
+  if (const Entry* e = Load(st.hash, true)) Patch(s, st, *e, raw, r);
   st.last = std::move(raw);
+}
+
+void PackPoll() {
+  if (g_waiting.empty()) return;
+  for (auto it = g_waiting.begin(); it != g_waiting.end();) {
+    Surface& s = **it;
+    PackState& st = *s.pack;
+    const Entry* e = Load(st.pending);
+    if (!e && !g_cache.count(st.pending)) {
+      ++it;
+      continue;
+    }
+    it = g_waiting.erase(it);
+    const uint64_t hash = st.pending;
+    st.pending = 0;
+    if (e) Use(s, st, hash, *e, st.last);  // else unreadable
+  }
 }
 
 }  // namespace recomp::ddraw

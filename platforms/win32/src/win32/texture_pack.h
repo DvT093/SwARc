@@ -8,6 +8,11 @@
 // DDPIXELFORMAT - followed by its top level's pixels as the game wrote
 // them, row after row without padding (width * bits / 8 bytes each).
 //
+// PNGs are decoded (and their mip chains built) on worker threads, so a
+// game that uploads many textures while it loads is not held up: a texture
+// gets its replacement once that is ready, at the latest a frame later
+// (PackPoll); until then the game's own texture is drawn.
+//
 // A PNG may be any size (normally a whole multiple of the original's) and
 // carries its own alpha: for a colour-keyed texture, 0 where the key is.
 // The replacement gets a mip chain of its own and is drawn instead of the
@@ -40,6 +45,8 @@ struct Surface;
 
 // What a surface's replacement is; owned by the surface.
 struct PackState {
+  Surface* owner = nullptr;
+  uint64_t pending = 0;         // matched, its replacement still decoding
   uint64_t hash = 0;            // the matched texture's
   gfx::TextureId bound = 0;     // the surface texture the replacement is set on
   gfx::TextureId hd = 0;        // the replacement (shared, or `own`)
@@ -53,5 +60,7 @@ struct PackState {
 // A texture's top level was uploaded (s.level == 0): match it against the
 // pack, follow a change, or dump it.
 void PackUpload(Surface& s);
+// Binds the replacements that finished decoding (main thread, each frame).
+void PackPoll();
 
 }  // namespace recomp::ddraw
