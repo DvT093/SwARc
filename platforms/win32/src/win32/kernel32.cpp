@@ -1083,6 +1083,15 @@ HLE("winmm.dll", joyGetNumDevs, 0) { return 0; }
 HLE("winmm.dll", joyGetDevCapsA, 3) { return 6; }   // MMSYSERR_NODRIVER
 HLE("winmm.dll", joyGetPosEx, 2) { return 6; }
 HLE("winmm.dll", midiInGetNumDevs, 0) { return 0; }
+// No mixer devices (A2 Racer IV mutes a mixer line while paused; with
+// zero devices it skips that).
+HLE("winmm.dll", mixerGetNumDevs, 0) { return 0; }
+HLE("winmm.dll", mixerOpen, 5) { return 2; }  // MMSYSERR_BADDEVICEID
+HLE("winmm.dll", mixerClose, 1) { return 5; }  // MMSYSERR_INVALHANDLE
+HLE("winmm.dll", mixerGetLineInfoA, 3) { return 5; }
+HLE("winmm.dll", mixerGetLineControlsA, 3) { return 5; }
+HLE("winmm.dll", mixerGetControlDetailsA, 3) { return 5; }
+HLE("winmm.dll", mixerSetControlDetails, 3) { return 5; }
 HLE("winmm.dll", midiInGetDevCapsA, 3) { return 2; }  // MMSYSERR_BADDEVICEID
 HLE("winmm.dll", midiInOpen, 5) { return 2; }
 HLE("winmm.dll", midiInStart, 1) { return 5; }  // MMSYSERR_INVALHANDLE
