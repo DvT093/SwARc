@@ -85,6 +85,7 @@ gfx::Format PrimaryFormat() {
 }
 
 void PresentPrimary() {
+  PackPoll();
   hle::PresentFrame(*Gfx(), PrimaryWidth(), PrimaryHeight());
   g_last_present_ms = SDL_GetTicks();
 }
