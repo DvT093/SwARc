@@ -86,6 +86,9 @@ bool CloseHandleValue(uint32_t h);
 enum class PathAccess { kRead, kWrite, kUpdate };
 std::string HostPath(const std::string& guest_path,
                      PathAccess access = PathAccess::kRead);
+// Changes with every HostPath call that may write (kWrite, kUpdate): a
+// cached resolution or file content may be stale once it changed.
+uint64_t HostWriteGeneration();
 // A Unicode path (W functions, UTF-8 APIs) as the guest's narrow
 // Windows-1252 path, the form HostPath takes; fatal for a character
 // outside Windows-1252.

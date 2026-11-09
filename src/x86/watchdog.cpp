@@ -167,6 +167,10 @@ void RegisterGuestHostThread(const char* name, unsigned tid) {
 }
 
 void WatchdogHeartbeat() { g_beat.store(NowMs()); }
+int64_t MsSinceHeartbeat() {
+  const int64_t beat = g_beat.load(std::memory_order_relaxed);
+  return beat ? NowMs() - beat : -1;
+}
 void WatchdogFrame() { g_frame.store(NowMs()); }
 void WatchdogAppActive(bool active) {
   g_active.store(active);

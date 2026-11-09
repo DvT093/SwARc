@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -184,7 +185,14 @@ const win32::GameConfig::CdDrive* FindCdDrive(char letter) {
   return nullptr;
 }
 
+namespace {
+std::atomic<uint64_t> g_write_generation{0};
+}  // namespace
+
+uint64_t HostWriteGeneration() { return g_write_generation.load(std::memory_order_acquire); }
+
 std::string HostPath(const std::string& guest_path, PathAccess access) {
+  if (access != PathAccess::kRead) g_write_generation.fetch_add(1, std::memory_order_acq_rel);
   std::string g = AbsGuest(guest_path);
   std::vector<std::string> comps;
   if (InstallComponents(g, &comps)) {

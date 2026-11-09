@@ -118,6 +118,26 @@ bool HasHandler(const std::string& lib, const std::string& name) {
   return Registry().count({lib, name}) != 0;
 }
 
+namespace {
+
+// While the guest is busy without presenting or reading messages (loading
+// a level in one go), the host's window system goes unanswered: macOS shows
+// its busy cursor after about 2 s and the window cannot be moved. The
+// imports the guest keeps calling meanwhile (file reads, surface locks,
+// profile reads, ...) service it once 100 ms passed without that. The
+// events are only queued for the game, as Windows would; the platform's
+// hook does nothing off the thread that owns the windows.
+void ServiceHostIfStale() {
+  constexpr int64_t kStaleMs = 100;
+  static thread_local bool inside = false;
+  if (inside || !g_proc->pump_events || MsSinceHeartbeat() < kStaleMs) return;
+  inside = true;
+  g_proc->pump_events();
+  inside = false;
+}
+
+}  // namespace
+
 void CallThunk(Ctx& c, gaddr thunk) {
   const bool x64 = g_proc->x64;
   const gaddr off = thunk - ThunkBase();
@@ -177,6 +197,7 @@ void CallThunk(Ctx& c, gaddr thunk) {
     r = d.fn(c);
   }
   if (trace) TraceF("[%04X]   -> %llX\n", CurrentThread()->tid, (unsigned long long)r);
+  ServiceHostIfStale();
   if (x64) {
     c.rax = r;
     c.rsp += 8;  // the caller pops its own arguments
