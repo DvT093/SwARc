@@ -119,6 +119,9 @@ bool HostLinkFrame(bool window_visible) {
   return false;
 }
 
+static bool g_user_closed = false;
+void HostLinkNoteUserClose() { g_user_closed = true; }
+
 void HostLinkNotePlacement(int x, int y, int w, int h, bool fullscreen) {
   g_last = {true, x, y, w, h, fullscreen};
 }
@@ -141,6 +144,7 @@ void HostLinkExit() {
 #if defined(__APPLE__)
   YieldActivationTo(getppid());
 #endif
+  if (g_user_closed) HostLinkSend("closed");
   HostLinkSend("exit");
   bool acked = false;
   for (int waited = 0; !acked && waited < 2000; waited += 50) {
