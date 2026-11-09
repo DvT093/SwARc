@@ -134,9 +134,48 @@ struct ShaderDraw {
   const uint32_t (*sampler_states)[14] = nullptr;
 };
 
+// Image quality the host adds on top of what the game asks for, as a GPU
+// driver's control panel does; the game does not see it. All off is the
+// game's own rendering.
+struct Enhancements {
+  // Samples per pixel of the back buffer and its depth buffer (1, 2, 4,
+  // 8): multisample anti-aliasing, resolved before anything reads the
+  // back buffer. Render-target textures stay single-sampled.
+  int msaa = 1;
+  // With msaa > 1: draws with an alpha test and without blending (cut-out
+  // textures, colour keys) turn their alpha into coverage, so their cut
+  // edges are smoothed too.
+  bool alpha_to_coverage = false;
+  // Mip chains for textures the game gives as a single level (power of
+  // two, at least 8 texels on a side, not render targets), made when the
+  // top level is uploaded (alpha-weighted, so transparent texels do not
+  // darken the levels below). Decided when a texture is created; when
+  // off they still exist but are not sampled.
+  bool build_mips = false;
+  // Sample those chains: linear minification without mip filtering
+  // becomes trilinear on them.
+  bool mipmaps = false;
+  // Anisotropic filtering (1 = off, up to 16) on every linearly
+  // minified texture.
+  int anisotropy = 1;
+};
+
 class Device {
  public:
   virtual ~Device() = default;
+
+  // Image quality enhancements (Enhancements); may change between frames.
+  // Backends without them ignore it.
+  virtual void SetEnhancements(const Enhancements&) {}
+  // Samples per pixel the back buffer has now: Enhancements::msaa, or
+  // less where the GPU cannot do that many.
+  virtual int MsaaSamples() const { return 1; }
+  // A host overlay (an on-screen message): `w` x `h` A8R8G8B8 pixels
+  // blended over each presented frame at x, y of the back buffer, until
+  // replaced; null `argb` removes it. Not in readbacks of the back buffer.
+  virtual void SetOverlay(const uint32_t* argb, int w, int h, int x, int y) {
+    (void)argb, (void)w, (void)h, (void)x, (void)y;
+  }
 
   // (Re)creates the swap chain: a w x h back buffer presented to the
   // window. Called on SetDisplayMode / device creation.

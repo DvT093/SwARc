@@ -298,10 +298,12 @@ struct PipelineKey {
   // The pass's colour targets: count, SDL formats, write masks of 1-3
   // (target 0's is write_mask).
   uint8_t targets, fmt[4], mask[3];
+  // Samples per pixel of the pass (1, 2, 4, 8) and alpha to coverage.
+  uint8_t samples, a2c, pad[2];
 
   bool operator==(const PipelineKey& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
 };
-static_assert(sizeof(PipelineKey) == 36, "no padding: compared and hashed as bytes");
+static_assert(sizeof(PipelineKey) == 40, "no padding: compared and hashed as bytes");
 
 // A pipeline for translated shaders: the fixed state, the shaders and
 // D3D9's separate alpha blend.
@@ -312,7 +314,7 @@ struct ShaderKey {
 
   bool operator==(const ShaderKey& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
 };
-static_assert(sizeof(ShaderKey) == 48, "no padding: compared and hashed as bytes");
+static_assert(sizeof(ShaderKey) == 52, "no padding: compared and hashed as bytes");
 
 template <typename K>
 struct BytesHash {
@@ -423,7 +425,9 @@ class GpuDevice final : public Device {
     for (auto& [k, s] : samplers_) SDL_ReleaseGPUSampler(dev_, s);
     for (auto& [id, t] : textures_) SDL_ReleaseGPUTexture(dev_, t.tex);
     for (auto& [id, d] : depths_) SDL_ReleaseGPUTexture(dev_, d.tex);
-    for (SDL_GPUTexture* t : {backbuffer_, front_, dummy_, dummy_2d_, dummy_cube_, dummy_3d_})
+    for (auto& [d, t] : depth_ms_) SDL_ReleaseGPUTexture(dev_, t);
+    for (SDL_GPUTexture* t : {backbuffer_, front_, backbuffer_ms_, ms_restore_, dummy_, dummy_2d_,
+                              dummy_cube_, dummy_3d_})
       if (t) SDL_ReleaseGPUTexture(dev_, t);
     for (auto& b : blit_pool_) SDL_ReleaseGPUTexture(dev_, b.tex);
     for (SDL_GPUBuffer* b : {vbuf_, ibuf_})
@@ -434,6 +438,34 @@ class GpuDevice final : public Device {
     if (fs_) SDL_ReleaseGPUShader(dev_, fs_);
     SDL_ReleaseWindowFromGPUDevice(dev_, window_);
     SDL_DestroyGPUDevice(dev_);
+  }
+
+  // ---- enhancements
+
+  void SetEnhancements(const Enhancements& e) override {
+    std::lock_guard<std::recursive_mutex> l(mu_);
+    Flush();
+    enh_ = e;
+    int samples = std::clamp(e.msaa, 1, 8);
+    while (samples > 1 && !SDL_GPUTextureSupportsSampleCount(
+                              dev_, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SampleCount(samples)))
+      samples /= 2;
+    if (samples != std::clamp(e.msaa, 1, 8) && !warned_msaa_++)
+      WarnF("gfx: %dx MSAA not supported, using %dx\n", e.msaa, samples);
+    if (samples != ms_samples_) {
+      CreateMultisample(samples);
+      BindTarget();
+    }
+  }
+
+  int MsaaSamples() const override { return ms_samples_; }
+
+  void SetOverlay(const uint32_t* argb, int w, int h, int x, int y) override {
+    std::lock_guard<std::recursive_mutex> l(mu_);
+    overlay_.clear();
+    if (!argb || w <= 0 || h <= 0) return;
+    overlay_.assign(argb, argb + size_t(w) * size_t(h));
+    overlay_rect_ = {x, y, x + w, y + h};
   }
 
   // ---- swap chain
@@ -449,6 +481,7 @@ class GpuDevice final : public Device {
     }
     bb_w_ = w;
     bb_h_ = h;
+    CreateMultisample(ms_samples_);
     // Without vsync, mailbox (no tearing, never blocks), as the d3d9
     // backend has DXVK do. Where there is none (Metal), it is emulated on
     // vsync: Show() presents at most one frame per refresh (immediate
@@ -489,6 +522,12 @@ class GpuDevice final : public Device {
       for (int s = std::max(w, h); s > 1; s >>= 1) levels++;
     }
     Tex t;
+    // A single level the device may give a mip chain of its own
+    // (Enhancements::build_mips), down to 4 texels on the short side.
+    if (enh_.build_mips && !rt && levels == 1 && CanBuildMips(w, h, fmt)) {
+      while (std::min(w >> levels, h >> levels) >= 4) levels++;
+      t.auto_mip = true;
+    }
     t.w = w;
     t.h = h;
     t.levels = levels;
@@ -550,7 +589,7 @@ class GpuDevice final : public Device {
     std::lock_guard<std::recursive_mutex> l(mu_);
     auto it = textures_.find(id);
     if (it == textures_.end() || level < 0 || level >= it->second.levels) return;
-    const Tex& t = it->second;
+    Tex& t = it->second;
     int lw = std::max(1, t.w >> level), lh = std::max(1, t.h >> level);
     Rect c = Clip(r, lw, lh);
     int w = c.right - c.left, h = c.bottom - c.top;
@@ -572,6 +611,13 @@ class GpuDevice final : public Device {
     ConvertToArgb(s, pitch, t.fmt, w, h, px.data());
     QueueUpload(t.tex, level, c.left, c.top, w, h, px.data(), uint32_t(w) * 4, uint32_t(h),
                 uint32_t(w) * 4, false, false, layer);
+    if (t.auto_mip && level == 0) {
+      if (t.top.empty()) t.top.assign(size_t(t.w) * size_t(t.h), 0);
+      for (int y = 0; y < h; y++)
+        std::memcpy(&t.top[size_t(c.top + y) * size_t(t.w) + size_t(c.left)],
+                    &px[size_t(y) * size_t(w)], size_t(w) * 4);
+      BuildMips(t);
+    }
   }
   void UpdateTexture(TextureId id, int level, const Rect& r, const void* src,
                      uint32_t pitch) override {
@@ -653,6 +699,11 @@ class GpuDevice final : public Device {
     auto it = depths_.find(id);
     if (it == depths_.end()) return;
     if (pass_depth_ == it->second.tex) Flush();
+    auto ms = depth_ms_.find(it->second.tex);
+    if (ms != depth_ms_.end()) {
+      SDL_ReleaseGPUTexture(dev_, ms->second);
+      depth_ms_.erase(ms);
+    }
     if (current_depth_ == id) {
       current_depth_ = 0;
       BindTarget();
@@ -721,6 +772,7 @@ class GpuDevice final : public Device {
     bi.filter = linear ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
     SDL_BlitGPUTexture(cmd, &bi);
     Submit(cmd);
+    if (d == backbuffer_) ms_stale_ = true;  // past the multisampled copy
   }
 
   // ---- 2D
@@ -1349,6 +1401,18 @@ void r_color0(inout vec4 c) {
     d.texture = front_;
     SDL_CopyGPUTextureToTexture(cp, &s, &d, Uint32(bb_w_), Uint32(bb_h_), 1, false);
     SDL_EndGPUCopyPass(cp);
+    if (!overlay_.empty()) {
+      // Over the frame in the front buffer, after the copy.
+      Submit(cmd);
+      SetPass(front_, nullptr);
+      const int w = overlay_rect_.right - overlay_rect_.left;
+      const int h = overlay_rect_.bottom - overlay_rect_.top;
+      DrawImage(overlay_.data(), uint32_t(w) * 4, Format::A8R8G8B8, {0, 0, w, h}, overlay_rect_,
+                false, 0, true);
+      Flush();
+      BindTarget();
+      cmd = SDL_AcquireGPUCommandBuffer(dev_);
+    }
     Show(cmd);
     Submit(cmd);
   }
@@ -1360,6 +1424,10 @@ void r_color0(inout vec4 c) {
     Format fmt = Format::Unknown;
     bool rt = false;
     bool cube = false;
+    // A mip chain the device builds from `top` (A8R8G8B8, the top level as
+    // uploaded) because the game gave one level (Enhancements::build_mips).
+    bool auto_mip = false;
+    std::vector<uint32_t> top;
   };
   struct Depth {
     SDL_GPUTexture* tex = nullptr;
@@ -1665,6 +1733,16 @@ void r_color0(inout vec4 c) {
   void Flush() {
     bool draw = !cmds_.empty() || pass_clear_color_ || pass_clear_depth_ || pass_clear_stencil_;
     if (!draw && uploads_.empty()) return;
+    const int samples = draw && pass_color_ ? PassSamples() : 1;
+    // The back buffer changed outside the multisampled one (StretchRect,
+    // MSAA switched on): a pass that keeps its contents starts by drawing
+    // it in, from a copy (a pass cannot read its own resolve target).
+    bool restore = false;
+    if (samples > 1 && ms_stale_) {
+      restore = !pass_clear_color_;
+      ms_stale_ = false;
+      if (restore) PrependRestore();
+    }
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev_);
     if (!cmd) FatalF("gfx: SDL_AcquireGPUCommandBuffer: %s", SDL_GetError());
 
@@ -1689,6 +1767,12 @@ void r_color0(inout vec4 c) {
       SDL_UnmapGPUTransferBuffer(dev_, upload_tb_);
 
       SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+      if (restore) {
+        SDL_GPUTextureLocation from{}, to{};
+        from.texture = backbuffer_;
+        to.texture = ms_restore_;
+        SDL_CopyGPUTextureToTexture(cp, &from, &to, Uint32(bb_w_), Uint32(bb_h_), 1, false);
+      }
       for (const Upload& u : uploads_) {
         SDL_GPUTextureTransferInfo src{};
         src.transfer_buffer = upload_tb_;
@@ -1732,9 +1816,16 @@ void r_color0(inout vec4 c) {
         ct.clear_color = clear_color_;
         ct.store_op = SDL_GPU_STOREOP_STORE;
       }
+      if (samples > 1) {
+        // Drawn into the samples, resolved into the back buffer; the
+        // samples are kept for the next pass of the frame.
+        cts[0].texture = backbuffer_ms_;
+        cts[0].store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+        cts[0].resolve_texture = backbuffer_;
+      }
       SDL_GPUDepthStencilTargetInfo dt{};
       if (pass_depth_) {
-        dt.texture = pass_depth_;
+        dt.texture = samples > 1 ? DepthTwin(pass_depth_) : pass_depth_;
         dt.load_op = pass_clear_depth_ ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
         dt.clear_depth = clear_depth_;
         dt.store_op = SDL_GPU_STOREOP_STORE;
@@ -2099,6 +2190,131 @@ void r_color0(inout vec4 c) {
     c.count = n;
   }
 
+  // ---- enhancements: MSAA and mip chains
+
+  static SDL_GPUSampleCount SampleCount(int n) {
+    return n >= 8 ? SDL_GPU_SAMPLECOUNT_8
+         : n >= 4 ? SDL_GPU_SAMPLECOUNT_4
+         : n >= 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_1;
+  }
+
+  // Samples of the pass being recorded: the back buffer's (alone) are
+  // multisampled with MSAA on.
+  int PassSamples() const {
+    return pass_color_ && pass_color_ == backbuffer_ && pass_targets_ == 1 && backbuffer_ms_
+               ? ms_samples_ : 1;
+  }
+
+  // (Re)creates the multisampled back buffer for `samples` (none for 1)
+  // and drops the depth twins. Caller has flushed.
+  void CreateMultisample(int samples) {
+    if (backbuffer_ms_) SDL_ReleaseGPUTexture(dev_, backbuffer_ms_);
+    if (ms_restore_) SDL_ReleaseGPUTexture(dev_, ms_restore_);
+    backbuffer_ms_ = ms_restore_ = nullptr;
+    for (auto& [d, t] : depth_ms_) SDL_ReleaseGPUTexture(dev_, t);
+    depth_ms_.clear();
+    ms_samples_ = samples;
+    ms_stale_ = true;
+    if (samples <= 1 || !bb_w_ || !bb_h_) return;
+    SDL_GPUTextureCreateInfo ti{};
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
+    ti.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    ti.width = Uint32(bb_w_);
+    ti.height = Uint32(bb_h_);
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
+    ti.sample_count = SampleCount(samples);
+    backbuffer_ms_ = SDL_CreateGPUTexture(dev_, &ti);
+    if (!backbuffer_ms_) FatalF("gfx: %dx MSAA back buffer: %s", samples, SDL_GetError());
+    ms_restore_ = CreateColor(bb_w_, bb_h_, 1);
+    std::fprintf(stderr, "gfx: %dx MSAA on the %dx%d back buffer\n", samples, bb_w_, bb_h_);
+  }
+
+  // The multisampled twin of depth buffer `d`, made on first use.
+  SDL_GPUTexture* DepthTwin(SDL_GPUTexture* d) {
+    auto it = depth_ms_.find(d);
+    if (it != depth_ms_.end()) return it->second;
+    const Depth* src = nullptr;
+    for (auto& [id, x] : depths_)
+      if (x.tex == d) src = &x;
+    if (!src) FatalF("gfx: depth buffer of the pass not found");
+    SDL_GPUTextureCreateInfo ti{};
+    ti.type = SDL_GPU_TEXTURETYPE_2D;
+    ti.format = src->gpu_format;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    ti.width = Uint32(src->w);
+    ti.height = Uint32(src->h);
+    ti.layer_count_or_depth = 1;
+    ti.num_levels = 1;
+    ti.sample_count = SampleCount(ms_samples_);
+    SDL_GPUTexture* t = SDL_CreateGPUTexture(dev_, &ti);
+    if (!t) FatalF("gfx: %dx MSAA depth buffer: %s", ms_samples_, SDL_GetError());
+    depth_ms_[d] = t;
+    return t;
+  }
+
+  // First draw of a multisampled pass that loads: the back buffer (copied
+  // to ms_restore_ in the flush's copy pass) over the whole target.
+  void PrependRestore() {
+    PipelineKey k = BaseKey(SDL_GPU_PRIMITIVETYPE_TRIANGLELIST);
+    Cmd c = InternalCmd(k, 0x004 | 0x100, true);
+    c.tex[0] = ms_restore_;
+    SamplerKey sk{};
+    sk.min = sk.mag = SDL_GPU_FILTER_NEAREST;
+    sk.mip = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    sk.u = sk.v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sk.aniso = 1;
+    c.smp[0] = Sampler(sk);
+    struct V {
+      float x, y, z, rhw, u, v;
+    };
+    float x0 = -0.5f, y0 = -0.5f, x1 = float(bb_w_) - 0.5f, y1 = float(bb_h_) - 0.5f;
+    V q[6] = {{x0, y0, 0, 1, 0, 0}, {x1, y0, 0, 1, 1, 0}, {x0, y1, 0, 1, 0, 1},
+              {x1, y0, 0, 1, 1, 0}, {x1, y1, 0, 1, 1, 1}, {x0, y1, 0, 1, 0, 1}};
+    AddVertices(c, q, 6, sizeof(V));
+    cmds_.insert(cmds_.begin(), c);
+  }
+
+  static bool CanBuildMips(int w, int h, Format f) {
+    auto pow2 = [](int n) { return n > 0 && (n & (n - 1)) == 0; };
+    return pow2(w) && pow2(h) && std::min(w, h) >= 8 && !IsCompressed(f) && !IsFloat(f) &&
+           f != Format::P8 && f != Format::Unknown;
+  }
+
+  // Levels 1.. of `t` from its top level, each texel the 2x2 below it:
+  // colour weighted by alpha (texels with alpha 0, a colour key's, do not
+  // darken the edges), alpha averaged.
+  void BuildMips(Tex& t) {
+    std::vector<uint32_t> src = t.top, dst;
+    int w = t.w, h = t.h;
+    for (int l = 1; l < t.levels; l++) {
+      const int dw = std::max(1, w / 2), dh = std::max(1, h / 2);
+      dst.assign(size_t(dw) * size_t(dh), 0);
+      for (int y = 0; y < dh; y++)
+        for (int x = 0; x < dw; x++) {
+          uint32_t sum[3] = {}, asum = 0;
+          for (int j = 0; j < 2; j++)
+            for (int i = 0; i < 2; i++) {
+              uint32_t p = src[size_t(std::min(2 * y + j, h - 1)) * size_t(w) +
+                               size_t(std::min(2 * x + i, w - 1))];
+              uint32_t a = p >> 24;
+              asum += a;
+              for (int ch = 0; ch < 3; ch++) sum[ch] += ((p >> (8 * ch)) & 0xFF) * a;
+            }
+          uint32_t out = ((asum + 2) / 4) << 24;
+          for (int ch = 0; ch < 3; ch++)
+            out |= (asum ? (sum[ch] + asum / 2) / asum : 0) << (8 * ch);
+          dst[size_t(y) * size_t(dw) + size_t(x)] = out;
+        }
+      QueueUpload(t.tex, l, 0, 0, dw, dh, dst.data(), uint32_t(dw) * 4, uint32_t(dh),
+                  uint32_t(dw) * 4);
+      src.swap(dst);
+      w = dw;
+      h = dh;
+    }
+  }
+
   // ---- per-draw state
 
   PipelineKey BaseKey(SDL_GPUPrimitiveType prim) const {
@@ -2119,6 +2335,7 @@ void r_color0(inout vec4 c) {
     // Fixed-function draws write target 0 only.
     k.targets = uint8_t(pass_targets_);
     for (int i = 0; i < 4; i++) k.fmt[i] = i < pass_targets_ ? pass_fmts_[i] : 0;
+    k.samples = uint8_t(PassSamples());
     return k;
   }
 
@@ -2145,6 +2362,9 @@ void r_color0(inout vec4 c) {
       k.op = uint8_t(BlendOp(rs_[171]));
     }
     k.write_mask = uint8_t(rs_[168] & 0xF);
+    // Alpha-tested, unblended draws (cut-out textures) with
+    // Enhancements::alpha_to_coverage.
+    if (k.samples > 1 && enh_.alpha_to_coverage && rs_[15] && !rs_[27]) k.a2c = 1;
     if (pass_depth_) {
       k.depth_test = rs_[7] ? 1 : 0;
       k.depth_write = (rs_[7] && rs_[14]) ? 1 : 0;
@@ -2206,7 +2426,8 @@ void r_color0(inout vec4 c) {
       pi.rasterizer_state.depth_bias_constant_factor = k.bias_const;
       pi.rasterizer_state.depth_bias_slope_factor = k.bias_slope;
     }
-    pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    pi.multisample_state.sample_count = SampleCount(k.samples);
+    pi.multisample_state.enable_alpha_to_coverage = k.a2c != 0;
     auto& ds = pi.depth_stencil_state;
     ds.enable_depth_test = k.depth_test != 0;
     ds.enable_depth_write = k.depth_write != 0;
@@ -2269,7 +2490,18 @@ void r_color0(inout vec4 c) {
     for (int s = 0; s < 8; s++) {
       auto it = textures_.find(stage_tex_[s]);
       c.tex[s] = it != textures_.end() ? it->second.tex : nullptr;
-      c.smp[s] = Sampler(StageSampler(s));
+      SamplerKey k = StageSampler(s);
+      // Enhancements: trilinear on the device's own mip chains, and
+      // anisotropic filtering, where the game minifies linearly.
+      if (k.min == SDL_GPU_FILTER_LINEAR) {
+        if (enh_.mipmaps && it != textures_.end() && it->second.auto_mip && k.mip == 0xFF) {
+          k.mip = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+          k.min_lod = 0;
+        }
+        if (enh_.anisotropy > 1)
+          k.aniso = uint8_t(std::max<int>(k.aniso, std::min(enh_.anisotropy, 16)));
+      }
+      c.smp[s] = Sampler(k);
     }
   }
 
@@ -2540,6 +2772,19 @@ void r_color0(inout vec4 c) {
   SDL_GPUTextureFormat depth24s8_ = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
   SDL_GPUTexture* backbuffer_ = nullptr;  // the game's back buffer
   SDL_GPUTexture* front_ = nullptr;       // the DirectDraw primary
+  // Enhancements: with MSAA (ms_samples_ > 1) the back buffer's draws go
+  // into backbuffer_ms_ and its depth twins (depth_ms_, per depth
+  // texture), resolved into backbuffer_ at the end of each pass;
+  // ms_stale_ while backbuffer_ is newer (ms_restore_ brings it back).
+  Enhancements enh_{};
+  int ms_samples_ = 1;
+  SDL_GPUTexture* backbuffer_ms_ = nullptr;
+  SDL_GPUTexture* ms_restore_ = nullptr;
+  bool ms_stale_ = false;
+  int warned_msaa_ = 0;
+  std::map<SDL_GPUTexture*, SDL_GPUTexture*> depth_ms_;
+  std::vector<uint32_t> overlay_;  // SetOverlay's image, over each presented frame
+  Rect overlay_rect_{};
   SDL_GPUTexture* dummy_ = nullptr;
   int bb_w_ = 0, bb_h_ = 0;
   // Mailbox emulated on vsync (ResetSwapChain, Show).
