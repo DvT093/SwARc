@@ -1114,8 +1114,28 @@ void DeliverHostEvent(const SDL_Event& e) {
 
 }  // namespace
 
+// <ID>_PUMP_GAP=ms: report each stretch longer than that in which the main
+// thread did not service the window system (macOS shows its busy cursor
+// after about 2 s), with when it ended, and the longest so far.
+static void NotePumpGap() {
+  static const double report_ms = [] {
+    const char* e = Env("PUMP_GAP");
+    return e ? std::atof(e) : 0.0;
+  }();
+  if (report_ms <= 0) return;
+  static Uint64 last = 0, longest = 0;
+  const Uint64 now = SDL_GetTicksNS();
+  const Uint64 gap = last ? now - last : 0;
+  last = now;
+  if (gap > longest) longest = gap;
+  if (gap / 1e6 >= report_ms)
+    WarnF("user32: no window events serviced for %.0f ms (until %.2f s; longest %.0f ms)\n",
+          gap / 1e6, now / 1e9, longest / 1e6);
+}
+
 void PumpHostEvents() {
   if (!g_sdl_up || !OnMainThread()) return;
+  NotePumpGap();
   InjectTestStall();
   SDL_Event e;
   while (SDL_PollEvent(&e)) {

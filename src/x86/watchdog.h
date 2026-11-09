@@ -15,6 +15,8 @@ void StartWatchdog();
 void RegisterGuestHostThread(const char* name, unsigned tid);
 // Called by the main thread whenever it services the window system.
 void WatchdogHeartbeat();
+// Milliseconds since the last heartbeat; -1 before the first.
+int64_t MsSinceHeartbeat();
 // Called on every presented frame. A minimized/inactive game presents
 // nothing, so this only counts while the game is active.
 void WatchdogFrame();
