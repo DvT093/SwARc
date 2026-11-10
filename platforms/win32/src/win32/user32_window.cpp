@@ -21,6 +21,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -32,6 +33,7 @@
 #include "runtime/display.h"
 #include "runtime/log.h"
 #include "win32/hle.h"
+#include "win32/host_embed.h"
 #include "win32/host_link.h"
 #include "win32/input_state.h"
 #include "win32/kernel32_state.h"
@@ -393,6 +395,28 @@ ClientMap MapToClient(uint32_t hwnd) {
 }
 
 // The window whose client area holds the clip rectangle, or 0.
+// Embedded in a front end's window (host_link.h, <ID>_EMBED): its size in
+// points and pixel density, and the game window it shows.
+struct Embed {
+  int w = 0, h = 0;
+  float density = 1;
+  uint32_t context = 0;  // exported layer, 0 not yet
+} g_embed;
+
+}  // namespace
+
+// SDL's relative mouse mode on a game window; embedded, on the front
+// end's window instead (the game's is never focused).
+void SetRelativeMouse(SDL_Window* sdl, bool on) {
+  if (HostEmbedded()) {
+    HostLinkSend(on ? "relmouse 1" : "relmouse 0");
+    return;
+  }
+  SDL_SetWindowRelativeMouseMode(sdl, on);
+}
+
+namespace {
+
 uint32_t ClipWindow() {
   std::lock_guard<std::recursive_mutex> l(g_mu);
   for (auto& [h, w] : g_windows) {
@@ -419,7 +443,7 @@ void AttachClip() {
     g_clip.hwnd = ClipWindow();
     if (Window* w = Win(g_clip.hwnd)) grab = w->sdl;
   }
-  if (grab && !Background()) SDL_SetWindowRelativeMouseMode(grab, true);
+  if (grab && !Background()) SetRelativeMouse(grab, true);
 }
 
 void ActivateApp(uint32_t hwnd, bool active) {
@@ -794,7 +818,9 @@ void UpdateFullscreen(uint32_t hwnd) {
     std::lock_guard<std::recursive_mutex> l(g_mu);
     Window* w = Win(hwnd);
     if (!w || !w->sdl) return;
-    if (w->placed)
+    if (w->placed && HostEmbedded())
+      want = false;  // the front end's window is the one on screen
+    else if (w->placed)
       want = (w->user_fullscreen >= 0 ? w->user_fullscreen == 1 : HandedPlacement()->fullscreen) &&
              w->visible && !w->destroyed;
     else
@@ -847,7 +873,9 @@ void UpdateFullscreen(uint32_t hwnd) {
       std::fprintf(stderr, "user32: window %X fullscreen for a %dx%d screen\n", hwnd, sw, sh);
   } else {
     SDL_SetWindowFullscreen(sdl, false);
-    if (const HostPlacement* p = HandedPlacement(); p && !p->fullscreen) {
+    if (HostEmbedded() && g_embed.w > 0) {
+      SDL_SetWindowSize(sdl, g_embed.w, g_embed.h);
+    } else if (const HostPlacement* p = HandedPlacement(); p && !p->fullscreen) {
       SDL_SetWindowSize(sdl, p->w, p->h);
       SDL_SetWindowPosition(sdl, p->x, p->y);
     } else if (!HandedPlacement()) {
@@ -879,7 +907,16 @@ void EnsureSdlVideo() {
   SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
   // A window handed over by a front end (host_link.h) goes fullscreen in
   // place, as the front end's own, without a Space and its animation.
-  if (HandedPlacement()) SDL_SetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, "0");
+  // A front end that asks for embedding (host_link.h) has its own
+  // fullscreen in a Space: without embedding the game then goes
+  // fullscreen in a Space as well.
+  if (HandedPlacement() && !HostEmbedRequested()) SDL_SetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, "0");
+  if (HostEmbedded()) {
+    // The front end's window has the focus all the time: the game's own
+    // window never activates, and game controllers report anyway.
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+  }
   // Run by a front end: no Dock icon of our own, no activation dance.
   if (HostLinked()) SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
   if (!SDL_Init(SDL_INIT_VIDEO)) FatalF("SDL_Init: %s", SDL_GetError());
@@ -894,7 +931,8 @@ void EnsureSdlVideo() {
         reinterpret_cast<void*>(objc_getClass("NSApplication")), sel_registerName("sharedApplication"));
     if (app)
       reinterpret_cast<void (*)(void*, SEL, long)>(objc_msgSend)(
-          app, sel_registerName("setActivationPolicy:"), 1L);  // Accessory
+          app, sel_registerName("setActivationPolicy:"),
+          HostEmbedded() ? 2L : 1L);  // Prohibited (embedded: never active), Accessory
   }
 #endif
   if (const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) {
@@ -1198,6 +1236,88 @@ void DeliverHostEvent(const SDL_Event& e) {
     HandleSdlEvent(e);
 }
 
+// The game's (first visible) top-level window.
+SDL_Window* MainSdlWindow() {
+  std::lock_guard<std::recursive_mutex> l(g_mu);
+  for (auto& [hw, win] : g_windows)
+    if (win.sdl && win.visible && !win.destroyed && !(win.style & WS_CHILD)) return win.sdl;
+  return nullptr;
+}
+
+// Embedded in the front end's window (host_link.h): hands it the Metal
+// layer once there is one, and turns its input lines into the SDL events
+// the game window would have had.
+void PumpEmbedded() {
+#if defined(__APPLE__)
+  // This process must never be the active one (host_link.h): say so if it is.
+  static bool was_active = false;
+  void* app = reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend)(
+      reinterpret_cast<void*>(objc_getClass("NSApplication")), sel_registerName("sharedApplication"));
+  const bool active = app && reinterpret_cast<bool (*)(void*, SEL)>(objc_msgSend)(app, sel_registerName("isActive"));
+  if (active && !was_active) WarnF("user32: embedded, yet this process became the active app\n");
+  was_active = active;
+#endif
+  SDL_Window* sdl = MainSdlWindow();
+  if (sdl && !g_embed.context) {
+    void* nsw = SDL_GetPointerProperty(SDL_GetWindowProperties(sdl), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+    if ((g_embed.context = EmbedExportLayer(nsw, g_embed.w, g_embed.h, g_embed.density)))
+      HostLinkSend("layer " + std::to_string(g_embed.context));
+  }
+  std::vector<std::string> lines;
+  HostLinkReadLines(&lines);
+  const SDL_WindowID id = sdl ? SDL_GetWindowID(sdl) : 0;
+  for (const std::string& line : lines) {
+    SDL_Event e{};
+    char ud = 0;
+    int a = 0, b = 0, c = 0;
+    float x = 0, y = 0, xr = 0, yr = 0;
+    const char* p = line.c_str();
+    if (std::sscanf(p, "key %c %d %d %d", &ud, &a, &b, &c) == 4) {
+      e.type = ud == 'd' ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+      e.key.windowID = id;
+      e.key.scancode = SDL_Scancode(a);
+      e.key.key = SDL_GetKeyFromScancode(e.key.scancode, SDL_KMOD_NONE, false);
+      e.key.mod = SDL_Keymod(b);
+      e.key.down = ud == 'd';
+      e.key.repeat = c != 0;
+    } else if (std::sscanf(p, "motion %f %f %f %f", &x, &y, &xr, &yr) == 4) {
+      e.type = SDL_EVENT_MOUSE_MOTION;
+      e.motion.windowID = id;
+      e.motion.x = x, e.motion.y = y, e.motion.xrel = xr, e.motion.yrel = yr;
+    } else if (std::sscanf(p, "button %c %d %d", &ud, &a, &b) == 3) {
+      e.type = ud == 'd' ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+      e.button.windowID = id;
+      e.button.button = Uint8(a);
+      e.button.clicks = Uint8(b);
+      e.button.down = ud == 'd';
+    } else if (std::sscanf(p, "wheel %f", &y) == 1) {
+      e.type = SDL_EVENT_MOUSE_WHEEL;
+      e.wheel.windowID = id;
+      e.wheel.y = y;
+    } else if (line == "leave") {
+      e.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+      e.window.windowID = id;
+    } else if (std::sscanf(p, "focus %d", &a) == 1) {
+      e.type = a ? SDL_EVENT_WINDOW_FOCUS_GAINED : SDL_EVENT_WINDOW_FOCUS_LOST;
+      e.window.windowID = id;
+    } else if (line == "quit") {
+      e.type = SDL_EVENT_QUIT;
+    } else if (std::sscanf(p, "size %d %d %f", &a, &b, &x) == 3 && a > 0 && b > 0) {
+      g_embed.w = a, g_embed.h = b, g_embed.density = x > 0 ? x : 1;
+      if (sdl) SDL_SetWindowSize(sdl, a, b);
+      EmbedResize(a, b, g_embed.density);
+      std::fprintf(stderr, "user32: front end window now %dx%d points\n", a, b);
+      continue;
+    } else {
+      continue;
+    }
+    if (!id && e.type != SDL_EVENT_QUIT) continue;
+    // Automated runs take input only from <ID>_TEST_INPUT (PumpHostEvents).
+    if (Background() && e.type != SDL_EVENT_QUIT) continue;
+    DeliverHostEvent(e);
+  }
+}
+
 }  // namespace
 
 // <ID>_PUMP_GAP=ms: report each stretch longer than that in which the main
@@ -1238,6 +1358,7 @@ void PumpHostEvents() {
       continue;
     DeliverHostEvent(e);
   }
+  if (HostEmbedded()) PumpEmbedded();
   InjectTestFocus();
   InjectTestInput();
   WatchdogHeartbeat();
@@ -1248,7 +1369,8 @@ void PumpHostEvents() {
     bool fs;
     const bool visible = HostWindowPlacement(&x, &y, &w, &h, &fs);
     if (visible) HostLinkNotePlacement(x, y, w, h, fs);
-    if (HostLinkFrame(visible)) {
+    // Embedded: "shown" only once the front end can show the layer.
+    if (HostLinkFrame(visible && (!HostEmbedded() || g_embed.context))) {
       SDL_Window* sdl = nullptr;
       {
         std::lock_guard<std::recursive_mutex> l(g_mu);
@@ -1464,11 +1586,30 @@ HLE("user32.dll", CreateWindowExA, 12) {
                                SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE |
                                    SDL_WINDOW_HIGH_PIXEL_DENSITY | GfxWindowFlags());
     if (!win.sdl) FatalF("SDL_CreateWindow: %s", SDL_GetError());
-    if (const HostPlacement* p = HandedPlacement()) {
+    if (const HostPlacement* p = HandedPlacement(); p && HostEmbedded()) {
+      // Drawn into the front end's window: this one stays off screen.
+      if (!g_embed.w) g_embed = {p->w, p->h, p->density > 0 ? p->density : 1.0f, 0};
+      SDL_SetWindowBordered(win.sdl, false);
+      SDL_SetWindowResizable(win.sdl, false);
+      SDL_SetWindowSize(win.sdl, g_embed.w, g_embed.h);
+      SDL_SetWindowPosition(win.sdl, -30000, -30000);
+#if defined(__APPLE__)
+      // On every Space and out of the window cycle: showing it never
+      // makes macOS switch Spaces.
+      if (void* nsw = SDL_GetPointerProperty(SDL_GetWindowProperties(win.sdl), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,
+                                             nullptr))
+        reinterpret_cast<void (*)(void*, SEL, unsigned long)>(objc_msgSend)(
+            nsw, sel_registerName("setCollectionBehavior:"),
+            (1ul << 0) | (1ul << 4) | (1ul << 6) | (1ul << 8));  // all Spaces, stationary, ignores cycle, aux
+#endif
+      win.placed = true;
+      std::fprintf(stderr, "user32: window drawn into the front end's window, %dx%d points\n", g_embed.w,
+                   g_embed.h);
+    } else if (const HostPlacement* p = HandedPlacement()) {
       SDL_SetWindowPosition(win.sdl, p->x, p->y);
       if (!p->fullscreen) SDL_SetWindowSize(win.sdl, p->w, p->h);
       win.placed = true;
-      EnableFullscreenButton(win.sdl);
+      if (!HostEmbedRequested()) EnableFullscreenButton(win.sdl);  // with a Space it is the system's own
       std::fprintf(stderr, "user32: window placed by the front end at %d,%d %dx%d%s\n", p->x, p->y,
                    p->w, p->h, p->fullscreen ? " fullscreen" : "");
     }
@@ -1532,7 +1673,7 @@ HLE("user32.dll", DestroyWindow, 1) {
     if (g_clip.hwnd == hwnd) {
       // The clip stays; AttachClip gives it to the next window over it.
       g_clip.hwnd = 0;
-      if (w->sdl) SDL_SetWindowRelativeMouseMode(w->sdl, false);
+      if (w->sdl) SetRelativeMouse(w->sdl, false);
     }
     if (w->sdl) SDL_DestroyWindow(w->sdl);
     w->sdl = nullptr;
@@ -1573,6 +1714,7 @@ HLE("user32.dll", ShowWindow, 2) {
     sdl = w->sdl;
     exclusive = w->mode_w != 0;
   }
+  if (HostEmbedded() && sdl) std::fprintf(stderr, "user32: ShowWindow(%X, %u), embedded\n", hwnd, cmd);
   if (sdl) {
     if (!show) {
       SDL_HideWindow(sdl);
@@ -1581,8 +1723,8 @@ HLE("user32.dll", ShowWindow, 2) {
       // Behind an exclusive-mode "screen" the game's minimize on
       // deactivation is not carried out: the window simply stays put
       // while the game idles, and focusing it again resumes the game.
-      if (minimize && !exclusive) SDL_MinimizeWindow(sdl);
-      if (restore && !exclusive) SDL_RestoreWindow(sdl);
+      if (minimize && !exclusive && !HostEmbedded()) SDL_MinimizeWindow(sdl);
+      if (restore && !exclusive && !HostEmbedded()) SDL_RestoreWindow(sdl);
     }
   }
   UpdateFullscreen(hwnd);
@@ -1910,13 +2052,15 @@ HLE("user32.dll", GetForegroundWindow, 0) {
   return g_active;
 }
 HLE("user32.dll", SetForegroundWindow, 1) {
-  if (SDL_Window* s = SdlWindowFor(Arg(c, 0))) SDL_RaiseWindow(s);
+  // Embedded (host_link.h): raising would activate this process, and macOS
+  // would leave the front end's fullscreen Space for this window's.
+  if (SDL_Window* s = SdlWindowFor(Arg(c, 0)); s && !HostEmbedded()) SDL_RaiseWindow(s);
   std::lock_guard<std::recursive_mutex> l(g_mu);
   g_active = g_focus = Arg(c, 0);
   return 1;
 }
 HLE("user32.dll", BringWindowToTop, 1) {
-  if (SDL_Window* s = SdlWindowFor(Arg(c, 0))) SDL_RaiseWindow(s);
+  if (SDL_Window* s = SdlWindowFor(Arg(c, 0)); s && !HostEmbedded()) SDL_RaiseWindow(s);
   return 1;
 }
 
@@ -2367,7 +2511,12 @@ HLE64("user32.dll", CallNextHookEx, 4) { return 0; }
 
 HLE("user32.dll", ShowCursor, 1) {
   g_cursor_count += Arg(c, 0) ? 1 : -1;
-  if (g_sdl_up && !Background()) {
+  if (HostEmbedded()) {
+    static int shown = -1;
+    const int now = g_cursor_count >= 0 ? 1 : 0;
+    if (now != shown) HostLinkSend(now ? "cursor 1" : "cursor 0");
+    shown = now;
+  } else if (g_sdl_up && !Background()) {
     if (g_cursor_count >= 0)
       SDL_ShowCursor();
     else
@@ -2442,8 +2591,8 @@ HLE("user32.dll", ClipCursor, 1) {
       g_mouse_y = std::clamp(g_mouse_y, g_clip.t, std::max(g_clip.t, g_clip.b - 1));
     }
   }
-  if (release && release != grab) SDL_SetWindowRelativeMouseMode(release, false);
-  if (grab && !Background()) SDL_SetWindowRelativeMouseMode(grab, true);
+  if (release && release != grab) SetRelativeMouse(release, false);
+  if (grab && !Background()) SetRelativeMouse(grab, true);
   return 1;
 }
 

@@ -191,7 +191,7 @@ void OnRawInput(const RawInput& in) {
 void Grab(InputDevice& d, bool on) {
   if (d.grabbed == on || d.keyboard || !(d.coop & DISCL_EXCLUSIVE) || Background())
     return;
-  if (SDL_Window* w = SdlWindowFor(d.hwnd)) SDL_SetWindowRelativeMouseMode(w, on);
+  if (SDL_Window* w = SdlWindowFor(d.hwnd)) SetRelativeMouse(w, on);
   d.grabbed = on;
 }
 

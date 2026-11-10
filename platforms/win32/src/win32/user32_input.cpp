@@ -16,6 +16,7 @@
 #include "win32/hle.h"
 #include "win32/input_state.h"
 #include "win32/kernel32_state.h"
+#include "win32/host_link.h"
 #include "win32/user32_window.h"
 #include "win32/win32.h"
 
@@ -386,6 +387,37 @@ uint32_t ShowMessageBox(uint32_t owner, const std::string& text,
   if (Background()) {
     std::fprintf(stderr, "MessageBox: answered \"%s\" (background run)\n",
                  buttons[def].label);
+    return buttons[def].id;
+  }
+  if (HostEmbedded()) {
+    // Over the front end's window (host_link.h): this process never shows
+    // a window or becomes active.
+    auto esc = [](const std::string& t) {
+      std::string o;
+      for (char ch : AnsiToUtf8(t)) {
+        if (ch == '\n') o += "\\n";
+        else if (ch == '\r' || ch == '\t') o += ' ';
+        else if (ch == '\\') o += "\\\\";
+        else o += ch;
+      }
+      return o;
+    };
+    uint32_t f = 0;
+    switch (type & 0xF0) {
+      case 0x10: f = SDL_MESSAGEBOX_ERROR; break;
+      case 0x30: f = SDL_MESSAGEBOX_WARNING; break;
+      case 0x20:
+      case 0x40: f = SDL_MESSAGEBOX_INFORMATION; break;
+    }
+    std::string line = "msgbox " + std::to_string(f) + " " + std::to_string(def) + " ";
+    for (size_t i = 0; i < buttons.size(); i++)
+      line += (i ? "," : "") + std::to_string(buttons[i].id) + ":" + buttons[i].label;
+    line += "\t" + esc(caption) + "\t" + esc(text);
+    std::string answer;
+    if (!HostLinkAsk(line, "msgbox ", &answer)) return buttons[def].id;
+    const int id = std::atoi(answer.c_str());
+    for (const Button& b : buttons)
+      if (int(b.id) == id) return b.id;
     return buttons[def].id;
   }
   std::vector<SDL_MessageBoxButtonData> sdl;
