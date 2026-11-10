@@ -30,9 +30,34 @@
 //     plus the game's own lines (HostLinkSend). On macOS the game then
 //     runs as an accessory app: no Dock icon of its own.
 //
-// Both are optional and independent.
+//   <ID>_EMBED=1 (macOS, with <ID>_LINK_FD)
+//     The game draws into the front end's own window: to macOS there is
+//     one app with one window, so the front end's fullscreen (with its own
+//     Space and animation) stays as the game starts and ends. The game's
+//     window is borderless, off screen, never activated and never
+//     fullscreen; its Metal layer goes to the front end as a remote layer:
+//       "layer <context id>"   a CAContext; the front end shows it with a
+//                              CALayerHost over its window
+//     The front end then sends lines (instead of the bytes above):
+//       "key d|u <scancode> <mod> <repeat>", "motion <x> <y> <xrel> <yrel>"
+//       (points in its window), "button d|u <button> <clicks>",
+//       "wheel <dy>", "leave", "focus 1|0", "quit" (Cmd+Q, close button),
+//       "size <w> <h> <density>" (its window, points), and "x" after
+//       "exit". The game sends "cursor 0|1" (show the pointer) and
+//       "relmouse 0|1" (SDL's relative mouse mode) for the front end's
+//       window. A game without this support never sends "layer", and the
+//       front end falls back to the handover above.
+//       "msgbox <flags> <def> <id>:<label>,... \t<caption>\t<text>" asks the
+//       front end to show a message box over its window (flags as SDL's,
+//       def the index of the default button, \n in the texts as "\\n"); it
+//       answers "msgbox <id>" (the button chosen). The game's own process
+//       would have to become the active app to show one, and macOS would
+//       leave the front end's fullscreen Space.
+//
+// All are optional and independent.
 
 #include <string>
+#include <vector>
 
 namespace recomp {
 
@@ -47,6 +72,17 @@ const HostPlacement* HandedPlacement();
 
 // Whether <ID>_LINK_FD is set (a front end listens).
 bool HostLinked();
+// <ID>_EMBED (host_link.h, top): the game draws into the front end's window.
+bool HostEmbedded();
+// <ID>_EMBED is set, whether or not this system can do it (a front end
+// asking for it has its fullscreen in a Space of its own).
+bool HostEmbedRequested();
+// Embedded: the lines the front end sent since the last call.
+void HostLinkReadLines(std::vector<std::string>* out);
+// Embedded: sends `line` and waits for the answer that starts with
+// `prefix` (other lines wait for HostLinkReadLines). False if the front
+// end went away.
+bool HostLinkAsk(const std::string& line, const std::string& prefix, std::string* answer);
 // Sends one line (without '\n') to the front end; nothing if not linked.
 void HostLinkSend(const std::string& line);
 

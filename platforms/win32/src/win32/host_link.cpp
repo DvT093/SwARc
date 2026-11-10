@@ -2,6 +2,7 @@
 
 #include "win32/host_link.h"
 
+#include <dlfcn.h>
 #include <poll.h>
 #include <unistd.h>
 
@@ -12,6 +13,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 #include "runtime/log.h"
@@ -84,6 +86,83 @@ const HostPlacement* HandedPlacement() {
 
 bool HostLinked() { return LinkFd() >= 0; }
 
+bool HostEmbedRequested() {
+  const char* e = Env("EMBED");
+  return LinkFd() >= 0 && e && *e && std::strcmp(e, "0") != 0;
+}
+
+bool HostEmbedded() {
+#if defined(__APPLE__)
+  static const bool on = [] {
+    const char* e = Env("EMBED");
+    if (LinkFd() < 0 || !e || !*e || !std::strcmp(e, "0")) return false;
+    // The remote layer classes (host_embed.cpp) are private: without them
+    // the game takes over the front end's place as before (no "layer").
+    const bool have = objc_getClass("CAContext") && dlsym(RTLD_DEFAULT, "CGSMainConnectionID");
+    if (!have) WarnF("host link: no remote layers on this system, the game shows in its own window\n");
+    return have;
+  }();
+  return on;
+#else
+  return false;
+#endif
+}
+
+namespace {
+std::string g_in;  // embedded: a partial line from the front end
+
+// Reads what is there (waiting up to wait_ms for the first bytes) into
+// complete lines; false once the front end is gone.
+bool ReadLines(std::vector<std::string>* out, int wait_ms) {
+  const int fd = LinkFd();
+  if (fd < 0) return false;
+  bool alive = true;
+  for (int timeout = wait_ms;; timeout = 0) {
+    pollfd p{fd, POLLIN, 0};
+    if (poll(&p, 1, timeout) <= 0) break;
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof buf);
+    if (n <= 0) {
+      alive = false;
+      break;
+    }
+    g_in.append(buf, size_t(n));
+  }
+  for (size_t nl; (nl = g_in.find('\n')) != std::string::npos;) {
+    out->push_back(g_in.substr(0, nl));
+    g_in.erase(0, nl + 1);
+  }
+  return alive;
+}
+}  // namespace
+
+std::vector<std::string> g_held;  // lines read while waiting for an answer
+
+void HostLinkReadLines(std::vector<std::string>* out) {
+  if (!HostEmbedded()) return;
+  out->insert(out->end(), g_held.begin(), g_held.end());
+  g_held.clear();
+  ReadLines(out, 0);
+}
+
+bool HostLinkAsk(const std::string& line, const std::string& prefix, std::string* answer) {
+  if (!HostEmbedded()) return false;
+  HostLinkSend(line);
+  for (;;) {
+    std::vector<std::string> lines;
+    const bool alive = ReadLines(&lines, 100);
+    for (size_t i = 0; i < lines.size(); i++) {
+      if (!lines[i].compare(0, prefix.size(), prefix)) {
+        *answer = lines[i].substr(prefix.size());
+        g_held.insert(g_held.end(), lines.begin() + long(i) + 1, lines.end());
+        return true;
+      }
+      g_held.push_back(lines[i]);
+    }
+    if (!alive) return false;
+  }
+}
+
 void HostLinkSend(const std::string& line) {
   const int fd = LinkFd();
   if (fd < 0) return;
@@ -106,6 +185,7 @@ bool HostLinkFrame(bool window_visible) {
   const int fd = LinkFd();
   if (fd < 0) return false;
   if (sent) {
+    if (HostEmbedded()) return false;  // never activated: the front end keeps the focus
     pollfd p{fd, POLLIN, 0};
     char b;
     return poll(&p, 1, 0) > 0 && read(fd, &b, 1) == 1 && b == kActivate;
@@ -142,12 +222,18 @@ void HostLinkExit() {
     HostLinkSend(buf);
   }
 #if defined(__APPLE__)
-  YieldActivationTo(getppid());
+  if (!HostEmbedded()) YieldActivationTo(getppid());
 #endif
   if (g_user_closed) HostLinkSend("closed");
   HostLinkSend("exit");
   bool acked = false;
-  for (int waited = 0; !acked && waited < 2000; waited += 50) {
+  for (int waited = 0; !acked && waited < 2000 && HostEmbedded(); waited += 50) {
+    std::vector<std::string> lines;  // input still on its way is dropped
+    const bool alive = ReadLines(&lines, 50);
+    for (const std::string& l : lines) acked |= l == "x";
+    if (!alive) break;
+  }
+  for (int waited = 0; !acked && waited < 2000 && !HostEmbedded(); waited += 50) {
     pollfd p{fd, POLLIN, 0};
     char b;
     if (poll(&p, 1, 50) > 0) {

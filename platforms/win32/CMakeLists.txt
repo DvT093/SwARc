@@ -36,6 +36,7 @@ add_library(recomp_win32 SHARED
   src/win32/user32_input.cpp
   src/win32/user32_window.cpp
   src/win32/host_link.cpp
+  src/win32/host_embed.cpp
   src/win32/gdi32.cpp
   src/win32/shell_net.cpp
   src/win32/ws2_32.cpp
