@@ -97,6 +97,9 @@ struct Window {
   // Placed by the front end (HandedPlacement): its size and fullscreen
   // state no longer follow the game's.
   bool placed = false;
+  // The user's own fullscreen choice for a placed window (green button,
+  // Ctrl+Cmd+F): -1 none, else it overrides the front end's.
+  int user_fullscreen = -1;
   SDL_Window* sdl = nullptr;
   // Built-in controls (see "built-in control classes"): the text is
   // `title`; selection, font, image and check state are kept here.
@@ -436,6 +439,63 @@ void ActivateApp(uint32_t hwnd, bool active) {
   Post(hwnd, active ? WM_SETFOCUS : WM_KILLFOCUS, 0, 0);
 }
 
+void UpdateFullscreen(uint32_t hwnd);
+
+// ---- the green title-bar button --------------------------------------------
+// A window placed by a front end goes fullscreen without a Space of its
+// own (EnsureSdlVideo), and SDL then marks it "no fullscreen": the green
+// button turns into an old-style zoom "+". Marked fullscreen-capable
+// again, the button, Window > Enter Full Screen and Ctrl+Cmd+F send
+// toggleFullScreen:, which comes back as an SDL event (HandleSdlEvent)
+// and switches the window's host fullscreen (UpdateFullscreen).
+
+uint32_t g_toggle_fullscreen_event = 0;
+
+#if defined(__APPLE__)
+void ToggleFullScreenAction(id self, SEL, id) {
+  if (!g_toggle_fullscreen_event) return;
+  int n = 0;
+  SDL_Window** wins = SDL_GetWindows(&n);
+  for (int i = 0; i < n; i++)
+    if (SDL_GetPointerProperty(SDL_GetWindowProperties(wins[i]), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,
+                               nullptr) == reinterpret_cast<void*>(self)) {
+      SDL_Event e{};
+      e.type = g_toggle_fullscreen_event;
+      e.user.windowID = SDL_GetWindowID(wins[i]);
+      SDL_PushEvent(&e);
+    }
+  SDL_free(wins);
+}
+#endif
+
+void EnableFullscreenButton(SDL_Window* sdl) {
+#if defined(__APPLE__)
+  void* nsw = SDL_GetPointerProperty(SDL_GetWindowProperties(sdl), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+  if (!nsw) return;
+  using Get = unsigned long (*)(void*, SEL);
+  using Set = void (*)(void*, SEL, unsigned long);
+  unsigned long b = reinterpret_cast<Get>(objc_msgSend)(nsw, sel_registerName("collectionBehavior"));
+  b &= ~((1ul << 8) | (1ul << 9));  // FullScreenAuxiliary, FullScreenNone
+  b |= 1ul << 7;                     // FullScreenPrimary
+  reinterpret_cast<Set>(objc_msgSend)(nsw, sel_registerName("setCollectionBehavior:"), b);
+  class_replaceMethod(object_getClass(reinterpret_cast<id>(nsw)), sel_registerName("toggleFullScreen:"),
+                      reinterpret_cast<IMP>(ToggleFullScreenAction), "v@:@");
+  if (!g_toggle_fullscreen_event) g_toggle_fullscreen_event = SDL_RegisterEvents(1);
+#else
+  (void)sdl;
+#endif
+}
+
+void UserToggleFullscreen(uint32_t hwnd) {
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    Window* w = Win(hwnd);
+    if (!w || !w->placed) return;
+    w->user_fullscreen = w->fullscreen ? 0 : 1;
+  }
+  UpdateFullscreen(hwnd);
+}
+
 void HandleSdlEvent(const SDL_Event& e) {
   switch (e.type) {
     case SDL_EVENT_QUIT: {
@@ -466,6 +526,13 @@ void HandleSdlEvent(const SDL_Event& e) {
       // switch nothing.
       if (hle::GfxKey(int(e.key.scancode), e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat))
         break;
+      // Ctrl+Cmd+F: the macOS fullscreen key (the game never sees Cmd).
+      if (g_toggle_fullscreen_event && e.key.scancode == SDL_SCANCODE_F &&
+          (e.key.mod & SDL_KMOD_GUI) && (e.key.mod & SDL_KMOD_CTRL)) {
+        if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat)
+          if (uint32_t h = HwndForSdl(e.key.windowID)) UserToggleFullscreen(h);
+        break;
+      }
       uint32_t h = HwndForSdl(e.key.windowID);
       SDL_Scancode scancode = e.key.scancode;
       for (const auto& a : Game().key_aliases)
@@ -620,6 +687,8 @@ void HandleSdlEvent(const SDL_Event& e) {
       break;
     }
     default:
+      if (g_toggle_fullscreen_event && e.type == g_toggle_fullscreen_event)
+        if (uint32_t h = HwndForSdl(e.user.windowID)) UserToggleFullscreen(h);
       break;
   }
 }
@@ -726,7 +795,8 @@ void UpdateFullscreen(uint32_t hwnd) {
     Window* w = Win(hwnd);
     if (!w || !w->sdl) return;
     if (w->placed)
-      want = HandedPlacement()->fullscreen && w->visible && !w->destroyed;
+      want = (w->user_fullscreen >= 0 ? w->user_fullscreen == 1 : HandedPlacement()->fullscreen) &&
+             w->visible && !w->destroyed;
     else
       want = FullscreenPolicy() != F::Window && CoversScreen(*w);
     ScreenFor(*w, &sw, &sh);
@@ -1398,6 +1468,7 @@ HLE("user32.dll", CreateWindowExA, 12) {
       SDL_SetWindowPosition(win.sdl, p->x, p->y);
       if (!p->fullscreen) SDL_SetWindowSize(win.sdl, p->w, p->h);
       win.placed = true;
+      EnableFullscreenButton(win.sdl);
       std::fprintf(stderr, "user32: window placed by the front end at %d,%d %dx%d%s\n", p->x, p->y,
                    p->w, p->h, p->fullscreen ? " fullscreen" : "");
     }
