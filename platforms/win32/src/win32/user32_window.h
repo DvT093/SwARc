@@ -22,6 +22,10 @@ uint32_t WindowForDc(uint32_t hdc);
 // events belong to).
 bool OnMainThread();
 
+// SDL's relative mouse mode on a game window (embedded in a front end's
+// window, host_link.h: on the front end's).
+void SetRelativeMouse(SDL_Window* sdl, bool on);
+
 // Ensures SDL video is initialised (main thread only).
 void EnsureSdlVideo();
 
