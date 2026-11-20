@@ -1928,6 +1928,11 @@ HLE_NAMED("mss32.dll", "_AIL_set_named_sample_file@20", AIL_set_named_sample_fil
   s->v.Seek(0);
   s->v.rate = 0;
   s->start_pos_set = false;
+  // The file brings its own format: a set_sample_type before it (Europe
+  // Racer's music: type, rate, then the MP3) must not swap this source for
+  // an empty raw one at start_sample.
+  s->raw_dirty = false;
+  s->queue = nullptr;
   return 1;
 }
 
