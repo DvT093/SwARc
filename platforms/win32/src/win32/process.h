@@ -52,6 +52,12 @@ struct GameConfig : recomp::GameConfig {
   };
   Fullscreen fullscreen = Fullscreen::Desktop;
 
+  // The main thread's stack size in bytes; 0 = the EXE's SizeOfStackReserve.
+  // For games whose deepest call chains on the host (window messages
+  // handled inside guest calls) need more than the 1 MiB they had on
+  // Windows.
+  uint64_t main_stack_size = 0;
+
   // Host keys the game sees as another key (SDL scancodes), for keys the
   // host's system keeps for itself in combinations: e.g. a Mac's Command
   // keys as the PC's Ctrl (macOS switches Spaces on Ctrl+arrow). To 0: the

@@ -207,7 +207,7 @@ int RunProcess(const win32::GameConfig& game, const std::string& exe_path,
   }
   InitKernel32State();
 
-  Thread* main = CreateGuestThread(w.img.stack_reserve);
+  Thread* main = CreateGuestThread(std::max<uint64_t>(w.img.stack_reserve, game.main_stack_size));
   int rc = int(RunMainThread(main, [&](Ctx& c) { return CallGuest(c, w.img.entry, {}); }));
   HostLinkExit();
   return rc;
