@@ -348,6 +348,8 @@ void Dispatch(Ctx& c, uint32_t target, uint32_t va) {
 // The continuation runs in the owning function's catch handler, where a
 // second throw would leave that function's try block: catch it here.
 void Resume(Ctx& c, GuestResume r) {
+  RECOMP_TRACE("resume: to %08llX (ebp %08llX, from %08llX, esp %08X)\n", (unsigned long long)r.target,
+               (unsigned long long)r.ebp, (unsigned long long)r.from, uint32_t(c.esp));
   for (;;) {
     try {
       if (g_proc->x64)

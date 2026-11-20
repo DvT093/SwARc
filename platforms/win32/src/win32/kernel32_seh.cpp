@@ -216,6 +216,8 @@ bool RaiseAccessViolation(Ctx& c, bool write, uint32_t addr) {
   if (c.esp < t->stack_lo + kGap + 0x4000)
     FatalF("guest stack exhausted delivering an access violation at %08X "
            "(esp %08X, stack %08X-%08X)", addr, c.esp, uint32_t(t->stack_lo), uint32_t(t->stack_hi));
+  WarnF("access violation: %s %08X (esp %08X, ebp %08X, stack %08X-%08X)\n", write ? "write" : "read", addr,
+        c.esp, c.ebp, uint32_t(t->stack_lo), uint32_t(t->stack_hi));
   c.esp -= kGap;
   uint32_t params[2] = {write ? 1u : 0u, addr};
   bool cont = DispatchException(c, 0xC0000005, 0, 2, params, 0);

@@ -3041,10 +3041,17 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
       }
     }
   }
+  // A resume site in this function throws to another frame, after setting
+  // EBP to that frame's (MSVC's _JumpToContinuation: mov ebp, [ebp-4];
+  // jmp eax). Its own catch would see the matching EBP and run the target
+  // in this activation: let those throws pass.
+  std::string own_sites;
+  for (const auto& [va, insn] : f.insns)
+    if (p_.resume_sites.count(va)) own_sites += Fmt(" || r.from == 0x%llXu", U(va));
   if (resumable)
     o += std::string("  } catch (const ::recomp::GuestResume& r) {\n") +
-         (p_.x64 ? "    if (r.ebp != EF) throw;  // another activation's frame\n"
-                 : "    if (r.ebp != ebp) throw;  // another activation's frame\n") +
+         (p_.x64 ? "    if (r.ebp != EF" + own_sites + ") throw;  // another activation's frame\n"
+                 : "    if (r.ebp != ebp" + own_sites + ") throw;  // another activation's frame\n") +
          "    ::recomp::Resume(c, r);\n"
          "    return;\n"
          "  }\n";
